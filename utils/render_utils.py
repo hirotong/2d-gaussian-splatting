@@ -269,6 +269,7 @@ def create_videos(base_dir, input_dir, out_name, num_frames=480):
 
 def save_img_u8(img, pth):
   """Save an image (probably RGB) in [0, 1] to disk as a uint8 PNG."""
+  img = img.squeeze()
   with open(pth, 'wb') as f:
     Image.fromarray(
         (np.clip(np.nan_to_num(img), 0., 1.) * 255.).astype(np.uint8)).save(

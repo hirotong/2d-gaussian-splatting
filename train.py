@@ -97,7 +97,7 @@ def training(
         if pipe.brdf:
             if iteration >= opt.normal_reg_from_iter and iteration < opt.normal_reg_util_iter:
                 losses_extra["predicted_normal"] = predicted_normal_loss(
-                    render_pkg["rend_normal"], render_pkg["surf_normal"], render_pkg["rend_alpha"]
+                    render_pkg["normal_view"], render_pkg["surf_normal"], render_pkg["rend_alpha"]
                 )
             else:
                 losses_extra["predicted_normal"] = torch.tensor(0.0, device="cuda")

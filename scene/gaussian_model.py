@@ -286,7 +286,7 @@ class GaussianModel:
         dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
         scales = torch.log(torch.sqrt(dist2))[..., None].repeat(1, 2)
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
-        rots[:, 0] = 1.0
+        rots[:, 0] = 1
 
         opacities = self.inverse_opacity_activation(
             0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda")
@@ -301,8 +301,8 @@ class GaussianModel:
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
         if self.brdf:
-            normals = torch.zeros_like(fused_point_cloud, dtype=torch.float, device="cuda")
-            normals2 = torch.zeros_like(fused_point_cloud, dtype=torch.float, device="cuda")
+            normals = torch.zeros_like(fused_point_cloud, dtype=torch.float, device=self._xyz.device)
+            normals2 = torch.zeros_like(fused_point_cloud, dtype=torch.float, device=self._xyz.device)
             self._normal = nn.Parameter(normals.requires_grad_(True))
             self._normal2 = nn.Parameter(normals2.requires_grad_(True))
             self._metallic = nn.Parameter(
@@ -325,23 +325,21 @@ class GaussianModel:
             )
 
     def training_setup(self, training_args: OptimizationParams):
+        self.fix_brdf_lr = training_args.fix_brdf_lr
         self.percent_dense = training_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-
-        self.fix_brdf_lr = training_args.fix_brdf_lr
 
         l = [
             {"params": [self._xyz], "lr": training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
             {"params": [self._features_dc], "lr": training_args.feature_lr, "name": "f_dc"},
             {"params": [self._features_rest], "lr": training_args.feature_lr / 20.0, "name": "f_rest"},
             {"params": [self._opacity], "lr": training_args.opacity_lr, "name": "opacity"},
-            {"params": [self._scaling], "lr": training_args.scaling_lr, "name": "scaling"},
+            {"params": [self._scaling], "lr": training_args.scaling_lr * self.spatial_lr_scale, "name": "scaling"},
             {"params": [self._rotation], "lr": training_args.rotation_lr, "name": "rotation"},
         ]
 
         if self.brdf:
-            # TODO: Why need this?
             self._normal.requires_grad_(requires_grad=False)
             l.extend(
                 [
@@ -367,7 +365,6 @@ class GaussianModel:
             lr_delay_mult=training_args.position_lr_delay_mult,
             max_steps=training_args.position_lr_max_steps,
         )
-
         self.brdf_mlp_scheduler_args = get_expon_lr_func(
             lr_init=training_args.brdf_mlp_lr_init,
             lr_final=training_args.brdf_mlp_lr_final,
@@ -375,16 +372,45 @@ class GaussianModel:
             max_steps=training_args.brdf_mlp_lr_max_steps,
         )
 
+    def training_setup_SHoptim(self, training_args):
+        self.fix_brdf_lr = training_args.fix_brdf_lr
+        self.percent_dense = training_args.percent_dense
+        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+
+        l = [
+            {"params": [self._features_rest], "lr": training_args.feature_lr / 20.0, "name": "f_rest"},
+        ]
+
+        self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
+
+        # self.f_rest_scheduler_args = get_const_lr_func(training_args.feature_lr / 20.0)
+        if not self.fix_brdf_lr:
+            self.f_rest_scheduler_args = get_expon_lr_func(
+                lr_init=training_args.feature_lr / 20.0,
+                lr_final=training_args.feature_lr_final / 20.0,
+                lr_delay_steps=30000,
+                lr_delay_mult=training_args.brdf_mlp_lr_delay_mult,
+                max_steps=40000,
+            )
+            # max_steps=training_args.iterations)
+
+    def _update_learning_rate(self, iteration, param):
+        for param_group in self.optimizer.param_groups:
+            if param_group["name"] == param:
+                try:
+                    lr = getattr(self, f"{param}_scheduler_args", self.brdf_mlp_scheduler_args)(iteration)
+                    param_group["lr"] = lr
+                    return lr
+                except AttributeError:
+                    pass
+
     def update_learning_rate(self, iteration):
         """Learning rate scheduling per step"""
-        for param_group in self.optimizer.param_groups:
-            if param_group["name"] == "xyz":
-                lr = self.xyz_scheduler_args(iteration)
-                param_group["lr"] = lr
-            elif param_group["name"] == "brdf_mlp":
-                lr = self.brdf_mlp_scheduler_args(iteration)
-                param_group["lr"] = lr
-            return lr
+        self._update_learning_rate(iteration, "xyz")
+        if self.brdf and not self.fix_brdf_lr:
+            for param in ["brdf_mlp", "roughness", "specular", "normal", "f_dc", "f_rest"]:
+                lr = self._update_learning_rate(iteration, param)
 
     def construct_list_of_attributes(self, viewer_fmt=False):
         l = ["x", "y", "z", "nx", "ny", "nz"]
@@ -426,7 +452,7 @@ class GaussianModel:
 
         xyz = self._xyz.detach().cpu().numpy()
         normals = np.zeros_like(xyz) if not self.brdf else self._normal.detach().cpu().numpy()
-        normals2 = self._normal2.detach().cpu().numpy() if self.brdf else np.zeros_like(xyz)
+        normals2 = self._normal2.detach().cpu().numpy() if (self.brdf) else np.zeros_like(xyz)
         f_dc = self._features_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
         f_rest = self._features_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
         opacities = self._opacity.detach().cpu().numpy()
@@ -443,10 +469,9 @@ class GaussianModel:
             f_rest = np.zeros((f_rest.shape[0], 45))
             normals = np.zeros_like(normals)
 
-        dtype_full = [(attribute, "f4") for attribute in self.construct_list_of_attributes()]
+        dtype_full = [(attribute, "f4") for attribute in self.construct_list_of_attributes(viewer_fmt)]
 
         elements = np.empty(xyz.shape[0], dtype=dtype_full)
-
         if self.brdf and not viewer_fmt:
             attributes = np.concatenate(
                 (
@@ -471,20 +496,18 @@ class GaussianModel:
         el = PlyElement.describe(elements, "vertex")
         PlyData([el]).write(path)
 
-        o3d_pcd = o3d.geometry.PointCloud()
-        o3d_pcd.points = o3d.utility.Vector3dVector(xyz)
-        o3d_pcd.colors = o3d.utility.Vector3dVector(f_dc)
-
-        return o3d_pcd
+        pcd_o3d = o3d.geometry.PointCloud()
+        pcd_o3d.points = o3d.utility.Vector3dVector(xyz)
+        pcd_o3d.colors = o3d.utility.Vector3dVector(f_dc)
+        return pcd_o3d
 
     def reset_opacity(self):
-        opacities_new = self.inverse_opacity_activation(
-            torch.min(self.get_opacity, torch.ones_like(self.get_opacity) * 0.01)
-        )
+        opacities_new = inverse_sigmoid(torch.min(self.get_opacity, torch.ones_like(self.get_opacity) * 0.01))
         optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
         self._opacity = optimizable_tensors["opacity"]
 
-    def load_ply(self, path):
+    def load_ply(self, path, og_number_points=-1):
+        self.og_number_points = og_number_points
         plydata = PlyData.read(path)
 
         xyz = np.stack(
@@ -579,7 +602,6 @@ class GaussianModel:
         self._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device="cuda").requires_grad_(True))
         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
-
         if self.brdf:
             self._metallic = nn.Parameter(torch.tensor(metallic, dtype=torch.float, device="cuda").requires_grad_(True))
             self._specular = nn.Parameter(torch.tensor(specular, dtype=torch.float, device="cuda").requires_grad_(True))
@@ -734,7 +756,6 @@ class GaussianModel:
             self._albedo = optimizable_tensors["albedo"]
             self._normal = optimizable_tensors["normal"]
             self._normal2 = optimizable_tensors["normal2"]
-
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
@@ -746,9 +767,10 @@ class GaussianModel:
         padded_grad[: grads.shape[0]] = grads.squeeze()
         selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
         selected_pts_mask = torch.logical_and(
-            selected_pts_mask,
-            torch.max(self.get_scaling, dim=1).values > self.percent_dense * scene_extent,
+            selected_pts_mask, torch.max(self.get_scaling, dim=1).values > self.percent_dense * scene_extent
         )
+        if torch.sum(selected_pts_mask) == 0:
+            return
 
         stds = self.get_scaling[selected_pts_mask].repeat(N, 1)
         stds = torch.cat([stds, 0 * torch.ones_like(stds[:, :1])], dim=-1)
@@ -768,7 +790,6 @@ class GaussianModel:
         new_albedo = self._albedo[selected_pts_mask].repeat(N, 1) if self.brdf else None
         new_normal = self._normal[selected_pts_mask].repeat(N, 1) if self.brdf else None
         new_normal2 = self._normal2[selected_pts_mask].repeat(N, 1) if (self.brdf) else None
-
         self.densification_postfix(
             new_xyz,
             new_features_dc,
@@ -785,10 +806,7 @@ class GaussianModel:
         )
 
         prune_filter = torch.cat(
-            (
-                selected_pts_mask,
-                torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool),
-            )
+            (selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool))
         )
         self.prune_points(prune_filter)
 
@@ -796,10 +814,10 @@ class GaussianModel:
         # Extract points that satisfy the gradient condition
         selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)
         selected_pts_mask = torch.logical_and(
-            selected_pts_mask,
-            torch.max(self.get_scaling, dim=1).values <= self.percent_dense * scene_extent,
+            selected_pts_mask, torch.max(self.get_scaling, dim=1).values <= self.percent_dense * scene_extent
         )
-
+        if torch.sum(selected_pts_mask) == 0:
+            return
         new_xyz = self._xyz[selected_pts_mask]
         new_features_dc = self._features_dc[selected_pts_mask]
         new_features_rest = self._features_rest[selected_pts_mask]
@@ -847,7 +865,7 @@ class GaussianModel:
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
         self.xyz_gradient_accum[update_filter] += torch.norm(
-            viewspace_point_tensor.grad[update_filter], dim=-1, keepdim=True
+            viewspace_point_tensor.grad[update_filter, :2], dim=-1, keepdim=True
         )
         self.denom[update_filter] += 1
 
