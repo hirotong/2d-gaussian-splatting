@@ -138,7 +138,7 @@ class GaussianExtractor(object):
                 else:
                     self.images[k].append(render_pkg[k].cpu())
 
-        map(lambda x: torch.stack(x, dim=0), self.images)
+        map(lambda x: torch.stack(x, dim=0), self.images.values())
         self.estimate_bounding_sphere()
 
     def estimate_bounding_sphere(self):
@@ -351,8 +351,8 @@ class GaussianExtractor(object):
                 if k == "render":
                     img_k = self.images[k][idx].permute(1, 2, 0).cpu().numpy()
                     save_img_u8(img_k, os.path.join(path, "renders", "{0:05d}".format(idx) + ".png"))
-                elif k == "rend_depth":
-                    img_k = apply_depth_colormap(-self.images[k][idx][..., None]).permute(2, 0, 1)
+                elif k == "surf_depth":
+                    img_k = apply_depth_colormap(-self.images[k][idx].permute(1, 2, 0))
                     save_img_u8(img_k.cpu().numpy(), os.path.join(path, k, "{0:05d}".format(idx) + ".png"))
                 elif "normal" in k:
                     img_k = self.images[k][idx].permute(1, 2, 0).cpu().numpy() * 0.5 + 0.5
