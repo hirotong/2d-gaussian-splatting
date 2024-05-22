@@ -9,17 +9,19 @@
 # For inquiries contact  huangbb@shanghaitech.edu.cn
 #
 
-import torch
-import numpy as np
-import os
 import math
-from tqdm import tqdm
-from utils.render_utils import save_img_f32, save_img_u8
+import os
 from functools import partial
+
+import numpy as np
 import open3d as o3d
+import torch
 import trimesh
+from tqdm import tqdm
+
 from scene.gaussian_model import GaussianModel
-from utils.image_utils import srgb2linear, linear2srgb, apply_depth_colormap
+from utils.image_utils import apply_depth_colormap, linear2srgb, srgb2linear
+from utils.render_utils import save_img_f32, save_img_u8
 
 
 def post_process_mesh(mesh, cluster_to_keep=1000):
@@ -143,7 +145,7 @@ class GaussianExtractor(object):
         """
         Estimate the bounding sphere given camera pose
         """
-        from utils.render_utils import transform_poses_pca, focus_point_fn
+        from utils.render_utils import focus_point_fn, transform_poses_pca
 
         torch.cuda.empty_cache()
         c2ws = np.array(
@@ -178,8 +180,8 @@ class GaussianExtractor(object):
         )
 
         for i, cam_o3d in tqdm(enumerate(to_cam_open3d(self.viewpoint_stack)), desc="TSDF integration progress"):
-            rgb = self.rgbmaps[i]
-            depth = self.depthmaps[i]
+            rgb = self.images["render"][i]
+            depth = self.images["surf_depth"][i]
 
             # if we have mask provided, use it
             if mask_backgrond and (self.viewpoint_stack[i].gt_alpha_mask is not None):
@@ -339,11 +341,17 @@ class GaussianExtractor(object):
     @torch.no_grad()
     def export_image(self, path):
         for k in self.images:
-            os.makedirs(os.path.join(path, k), exist_ok=True)
+            if k == "render":
+                os.makedirs(os.path.join(path, "renders"), exist_ok=True)
+            else:
+                os.makedirs(os.path.join(path, k), exist_ok=True)
 
         for idx, viewpoint_cam in tqdm(enumerate(self.viewpoint_stack), desc="export images"):
             for k in self.images.keys():
-                if k == "rend_depth":
+                if k == "render":
+                    img_k = self.images[k][idx].permute(1, 2, 0).cpu().numpy()
+                    save_img_u8(img_k, os.path.join(path, "renders", "{0:05d}".format(idx) + ".png"))
+                elif k == "rend_depth":
                     img_k = apply_depth_colormap(-self.images[k][idx][..., None]).permute(2, 0, 1)
                     save_img_u8(img_k.cpu().numpy(), os.path.join(path, k, "{0:05d}".format(idx) + ".png"))
                 elif "normal" in k:
