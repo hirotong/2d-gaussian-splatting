@@ -175,3 +175,11 @@ def colormap(img, cmap='jet'):
     img = torch.from_numpy(data / 255.).float().permute(2,0,1)
     plt.close()
     return img
+
+def flip_align_view(normal, viewdir):
+    # normal: (N, 3)
+    # viewdir: (N, 3)
+    dotprod = torch.sum(normal * -viewdir, dim=-1, keepdim=True)
+    non_flip = dotprod >= 0
+    normal_flipped = normal * torch.where(non_flip, 1, -1)
+    return normal_flipped, non_flip

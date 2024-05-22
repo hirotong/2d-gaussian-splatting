@@ -75,3 +75,11 @@ def fov2focal(fov, pixels):
 
 def focal2fov(focal, pixels):
     return 2*math.atan(pixels/(2*focal))
+
+
+def get_rays(width, height, intrinsic, camrot):
+    px, py = torch.meshgrid(torch.arange(height, dtype=torch.float32), torch.arange(width, dtype=torch.float32))
+
+    pixelcoords = torch.stack((px, py), dim=-1).cuda()  # H x W x 2
+    raydir = get_dtu_raydir(pixelcoords, intrinsic, camrot, dir_norm=True)
+    return raydir
