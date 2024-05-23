@@ -483,9 +483,9 @@ class GaussianModel:
                     opacities,
                     scale,
                     rotation,
-                    roughness,
-                    specular,
                     metallic,
+                    specular,
+                    roughness,
                     albedo,
                 ),
                 axis=1,
@@ -560,11 +560,13 @@ class GaussianModel:
         if self.brdf:
             metallic = np.asarray(plydata.elements[0]["metallic"])[..., np.newaxis]
             specular_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("specular")]
+            specular_names = sorted(specular_names, key=lambda x: int(x.split("_")[-1]))
             specular = np.zeros((xyz.shape[0], len(specular_names)))
             for idx, attr_name in enumerate(specular_names):
-                specular[:, idx] = plydata.elements[0][attr_name]
+                specular[:, idx] = np.asarray(plydata.elements[0][attr_name])
             roughness = np.asarray(plydata.elements[0]["roughness"])[..., np.newaxis]
             albedo_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("albedo")]
+            albedo_names = sorted(albedo_names, key=lambda x: int(x.split("_")[-1]))
             albedo = np.zeros((xyz.shape[0], len(albedo_names)))
             for idx, attr_name in enumerate(albedo_names):
                 albedo[:, idx] = np.asarray(plydata.elements[0][attr_name])
