@@ -264,7 +264,7 @@ def render(
             )[0]
             out_extras[k] = image
 
-        for k in ["normal", "normal_axis", "normal_view"] if debug else ["normal", "normal_axis"]:
+        for k in ["normal", "normal_axis", "normal_view"] if debug else ["normal", "normal_view"]:
             if k in out_extras.keys():
                 out_extras[k] = (out_extras[k] - 0.5) * 2.0  # [0, 1] -> [-1, 1]
 
@@ -316,6 +316,7 @@ def render(
     surf_normal = render_normalmap(viewpoint_camera, surf_depth[0], bg_color, render_alpha[0])
 
     if debug:
+        normalize_normal_inplace(out_extras["normal_axis"], render_alpha[0])
         render_normal_cam = rendered_world2cam(viewpoint_camera, render_normal, render_alpha[0], bg_color)
         surf_normal_cam = rendered_world2cam(viewpoint_camera, surf_normal, render_alpha[0], bg_color)
         normal_axis_cam = rendered_world2cam(viewpoint_camera, out_extras["normal_axis"], render_alpha[0], bg_color)
@@ -324,7 +325,6 @@ def render(
         out_extras["surf_normal_cam"] = surf_normal_cam
         out_extras["normal_axis_cam"] = normal_axis_cam
         out_extras["normal_view_cam"] = normal_view_cam
-        normalize_normal_inplace(out_extras["normal_axis"], render_alpha[0])
 
     out.update(
         {

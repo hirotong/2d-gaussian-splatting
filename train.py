@@ -24,7 +24,13 @@ from scene import GaussianModel, Scene
 from scene.NVDIFFREC.light import extract_env_map
 from utils.general_utils import safe_state
 from utils.image_utils import linear2srgb, psnr, srgb2linear
-from utils.loss_utils import delta_normal_loss, l1_loss, predicted_normal_loss, ssim, zero_one_loss
+from utils.loss_utils import (
+    delta_normal_loss,
+    l1_loss,
+    predicted_normal_loss,
+    ssim,
+    zero_one_loss,
+)
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -342,7 +348,9 @@ def training_report(
                     tb_writer.add_scalar(config["name"] + "/loss_viewpoint - psnr", psnr_test, iteration)
         torch.cuda.empty_cache()
 
+
 if __name__ == "__main__":
+    torch.set_num_threads(4)  # Limit number of threads to avoid usage
     # Set up command line argument parser
     parser = ArgumentParser(description="Training script parameters")
     lp = ModelParams(parser)
