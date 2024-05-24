@@ -6,8 +6,9 @@ import csv
 
 # root = "output/original/TanksAndTemple"
 # root = "output/ablation/TanksAndTemple_residual"
-root = "output/ablation/GlossySynthetic_residual"
+# root = "output/ablation/GlossySynthetic_residual"
 # root = "output/original/GlossySynthetic"
+root = "output/"
 
 f_names = sorted(glob(os.path.join(root, "*")))
 summary = {}

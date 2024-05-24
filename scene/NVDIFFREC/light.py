@@ -349,7 +349,7 @@ class EnvironmentLight(torch.nn.Module):
     wo = util.safe_normalize(view_pos - gb_pos)
 
     if specular:
-      diffuse_raw = kd
+      # diffuse_raw = kd
       roughness = kr
 
       F0 = (1.0 - metallic) * 0.04 + albedo * metallic  # F0
