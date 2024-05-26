@@ -251,6 +251,7 @@ if __name__ == "__main__":
         "--num_points", type=int, default=100_000, help="number of points to be sampled in the visual hull"
     )
     args = parser.parse_args()
+    args.data_dir = os.path.abspath(args.data_dir)
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 

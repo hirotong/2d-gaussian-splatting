@@ -137,7 +137,7 @@ class OptimizationParams(ParamGroup):
         self.lambda_delta_reg = 1e-3
         self.fix_brdf_lr = 0
         
-        self.brdf_only_until_iter = 3_000
+        self.brdf_only_until_iter = 0
 
         super().__init__(parser, "Optimization Parameters")
 
