@@ -74,7 +74,7 @@ def simple_resize_image(img, size):
 
 def get_visual_hull2(N, bbox, scene_info, cam_center):
     [xs, ys, zs], [xe, ye, ze] = bbox[0], bbox[1]
-    yy, xx, zz = np.meshgrid(np.linspace(ys, ye, N), np.linspace(xs, xe, N), np.linspace(zs, ze, N), indexing="ij")
+    xx, yy, zz = np.meshgrid(np.linspace(xs, xe, N), np.linspace(ys, ye, N), np.linspace(zs, ze, N), indexing="xy")
 
     coords = np.concatenate([xx[..., None], yy[..., None], zz[..., None]], axis=-1)  # (N, N, N, 3)
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Author: hiro
 # Date: 2024-05-26 23:42:26
-# LastEditTime: 2024-05-26 23:54:48
+# LastEditTime: 2024-05-26 23:59:35
 # Description:
 
 
@@ -33,7 +33,6 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[30_000])
     parser.add_argument("--start_checkpoint", type=str, default=None)
     args = get_combined_args(parser)
-    args.save_iterations.append(args.iterations)
 
     print("Working on " + args.model_path)
 

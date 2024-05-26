@@ -426,7 +426,8 @@ class GaussianModel:
         for i in range(self._features_rest.shape[1] * self._features_rest.shape[2]):
             l.append("f_rest_{}".format(i))
         l.append("opacity")
-        for i in range(self._scaling.shape[1]):
+        # for i in range(self._scaling.shape[1]):
+        for i in range(3):
             l.append("scale_{}".format(i))
         for i in range(self._rotation.shape[1]):
             l.append("rot_{}".format(i))
@@ -437,10 +438,10 @@ class GaussianModel:
         l.extend(["nx0", "ny2", "nz2"])
         # All channels except the 1 DC
         assert self.brdf, "BRDF is not enabled!"
-        for i in range(self._features_dc.shape[-1] * self._features_dc.shape[2]):
+        for i in range(self._features_dc.shape[1] * self._features_dc.shape[2]):
             l.append("f_dc_{}".format(i))
         if self.brdf_mode == "envmap":
-            for i in range(self._features_rest.shape[-1] * self._features_rest.shape[2]):
+            for i in range(self._features_rest.shape[1] * self._features_rest.shape[2]):
                 l.append("f_rest_{}".format(i))
         else:
             raise NotImplementedError
@@ -460,7 +461,7 @@ class GaussianModel:
         return l
 
     def save_ply(self, path, brdf_params=True, viewer_fmt=False):
-        assert brdf_params and not self.brdf, "BRDF is not enabled!"
+        assert not brdf_params or self.brdf, "BRDF is not enabled!"
         mkdir_p(os.path.dirname(path))
 
         xyz = self._xyz.detach().cpu().numpy()
@@ -505,6 +506,7 @@ class GaussianModel:
                 axis=1,
             )
         else:
+            scale = np.concatenate((scale, -10 * np.ones((scale.shape[0], 1))), axis=1)
             attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, "vertex")

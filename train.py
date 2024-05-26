@@ -90,10 +90,8 @@ def training(
             gaussians.set_requires_grad("normal2", state=iteration >= opt.normal_reg_from_iter)
             if gaussians.brdf_mode == "envmap":
                 gaussians.brdf_mlp.build_mips()
-            
+
             gaussians.set_requires_grad("xyz", state=iteration >= opt.brdf_only_until_iter)
-        
-        
 
         # Render
         render_pkg = render(viewpoint_cam, gaussians, pipe, background, debug=False)
@@ -194,14 +192,14 @@ def training(
                 scene.save(iteration)
 
             # Densification
-            if iteration < opt.densify_until_iter:
+            if iteration > opt.brdf_only_until_iter and iteration < opt.densify_until_iter:
                 gaussians.max_radii2D[visibility_filter] = torch.max(
                     gaussians.max_radii2D[visibility_filter], radii[visibility_filter]
                 )
                 gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
-                    size_threshold = 20 # if iteration > opt.opacity_reset_interval else None
+                    size_threshold = 20 if iteration > opt.opacity_reset_interval else None
                     gaussians.densify_and_prune(
                         opt.densify_grad_threshold, opt.opacity_cull, scene.cameras_extent, size_threshold
                     )
