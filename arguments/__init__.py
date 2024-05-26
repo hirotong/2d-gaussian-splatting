@@ -114,6 +114,9 @@ class OptimizationParams(ParamGroup):
         self.densify_from_iter = 500
         self.densify_until_iter = 15_000
         self.densify_grad_threshold = 0.0002
+        
+        
+        self.opacity_reset_until_iter = 30_000
 
         self.dist_reg_from_iter = 3_000
         self.dist_reg_until_iter = 30_000
@@ -133,6 +136,9 @@ class OptimizationParams(ParamGroup):
         self.lambda_predicted_normal = 2e-1
         self.lambda_delta_reg = 1e-3
         self.fix_brdf_lr = 0
+        
+        self.brdf_only_until_iter = 3_000
+
         super().__init__(parser, "Optimization Parameters")
 
 

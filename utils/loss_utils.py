@@ -15,8 +15,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.autograd import Variable
-
+from pytorch3d.ops import knn_points, knn_gather
 from utils.image_utils import erode
+from pytorch3d.loss import mesh_laplacian_smoothing
 
 
 def l1_loss(network_output, gt):
@@ -156,3 +157,91 @@ def cam_depth2world_point(cam_z, pixel_idx, intrinsic, extrinsic):
     )
     world_xyz = world_xyz[..., :3]
     return world_xyz, cam_xyz
+
+
+def normalize_adjacency_matrix(A):
+    # Compute the degree matrix
+    degrees = torch.sparse.sum(A, dim=1).to_dense()
+
+    d_inv_sqrt = torch.pow(degrees, -0.5)
+
+    A_normalized = d_inv_sqrt[:, None] * A * d_inv_sqrt[None, :]
+
+    # D_inv_sqrt = torch.diag(torch.pow(degrees, -0.5))
+    # D_inv_sqrt[torch.isinf(D_inv_sqrt)] = 0.0
+
+    # A_normalized = D_inv_sqrt @ A.to_dense() @ D_inv_sqrt
+    return A_normalized
+
+
+def laplacian_matrix(points, dist, indices):
+    """_summary_
+
+    _extended_summary_
+
+    Args:
+        point: (N, 3)
+        dist: (N, K)
+        indices: (N, K)
+        eps: _description_
+    """
+
+    V = points.shape[0]
+
+    row_indices = (
+        (torch.arange(indices.shape[0]) * indices.shape[1]).repeat_interleave(indices.shape[1]).to(points.device)
+    )
+    col_indices = indices.flatten()
+
+    weights = torch.exp(-dist.flatten())
+
+    A = torch.sparse_coo_tensor(torch.stack([row_indices, col_indices], dim=0).long(), weights, (V, V))
+    A = 0.5 * (A + A.t())
+
+    A_normalized = normalize_adjacency_matrix(A)
+
+    one_indices = torch.arange(V, device=points.device).unsqueeze(0).repeat(2, 1)
+    ones = torch.ones(V, device=points.device)
+    L = torch.sparse_coo_tensor(one_indices, ones, (V, V)) - A_normalized
+
+    return L
+
+
+def point_laplacian_loss(sample_points, all_points, num_neighbors=12):
+    """_summary_
+
+    _extended_summary_
+
+    Args:
+        sample_points: (N, 3)
+        all_points: (M, 3)
+        num_neighbors: _description_. Defaults to 12.
+    """
+    N = sample_points.shape[0]
+    sample_points = sample_points.unsqueeze(0)
+    all_points = all_points.unsqueeze(0)
+
+    # Find the nearest neighbors
+    dist, idx, nn = knn_points(sample_points, all_points, K=num_neighbors + 1, return_nn=True)
+
+    new_points = nn.reshape(-1, sample_points.shape[-1])  # (N * (K+1), 3)
+    new_indices = torch.arange(1, num_neighbors + 1).unsqueeze(0) + torch.arange(0, N).unsqueeze(1) * (
+        num_neighbors + 1
+    )  # (N, K)
+    new_indices = new_indices.to(sample_points.device)
+
+    new_dists = dist[0, :, 1:]  # (N, K)
+    L = laplacian_matrix(new_points, new_dists, new_indices)
+    loss = L.mm(new_points).reshape(N, num_neighbors + 1, 3)
+    loss = loss[:, 0]
+    loss = loss.norm(dim=1)
+
+    return loss.mean()
+
+
+if __name__ == "__main__":
+    all_points = torch.rand(10000000, 3).cuda()
+    sample_idx = torch.randint(0, all_points.shape[0], (10000,))
+    sample_points = all_points[sample_idx]
+    loss = point_laplacian_loss(sample_points, all_points)
+    print(loss)
