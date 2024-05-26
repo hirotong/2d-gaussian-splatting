@@ -90,6 +90,10 @@ def training(
             gaussians.set_requires_grad("normal2", state=iteration >= opt.normal_reg_from_iter)
             if gaussians.brdf_mode == "envmap":
                 gaussians.brdf_mlp.build_mips()
+            
+            gaussians.set_requires_grad("xyz", state=iteration >= opt.brdf_only_until_iter)
+        
+        
 
         # Render
         render_pkg = render(viewpoint_cam, gaussians, pipe, background, debug=False)
@@ -197,7 +201,7 @@ def training(
                 gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
-                    size_threshold = 20 if iteration > opt.opacity_reset_interval else None
+                    size_threshold = 20 # if iteration > opt.opacity_reset_interval else None
                     gaussians.densify_and_prune(
                         opt.densify_grad_threshold, opt.opacity_cull, scene.cameras_extent, size_threshold
                     )
@@ -362,7 +366,7 @@ if __name__ == "__main__":
     parser.add_argument("--test_iterations", nargs="+", type=int, default=[1_000, 3_000, 7_000, 30_000])
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[1_000, 3_000, 7_000, 30_000])
     parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
+    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[30_000])
     parser.add_argument("--start_checkpoint", type=str, default=None)
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
