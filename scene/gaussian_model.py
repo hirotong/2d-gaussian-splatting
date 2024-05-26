@@ -412,42 +412,55 @@ class GaussianModel:
             for param in ["brdf_mlp", "roughness", "specular", "normal", "f_dc", "f_rest"]:
                 lr = self._update_learning_rate(iteration, param)
 
-    def construct_list_of_attributes(self, viewer_fmt=False):
+    def construct_list_of_attributes(self, brdf_params=True, viewer_fmt=False):
+        if brdf_params:
+            return self._construct_list_of_attributes_brdf(viewer_fmt)
+        else:
+            return self._construct_list_of_attributes_gs()
+
+    def _construct_list_of_attributes_gs(self):
         l = ["x", "y", "z", "nx", "ny", "nz"]
         # All channels except the 3 DC
-        if not self.brdf:
-            for i in range(self._features_dc.shape[1] * self._features_dc.shape[2]):
-                l.append("f_dc_{}".format(i))
-            for i in range(self._features_rest.shape[1] * self._features_rest.shape[2]):
-                l.append("f_rest_{}".format(i))
-        else:
-            l.extend(["nx2", "ny2", "nz2"])
-            for i in range(self._features_dc.shape[1] * self._features_dc.shape[2]):
-                l.append("f_dc_{}".format(i))
-            # TODO: Figure out this
-            if viewer_fmt:
-                features_rest_len = 45
-            # elif self.brdf_mode == "envmap" and self.brdf_dim == 0:
-            #   features_rest_len = self._features_rest.shape[1]
-            elif self.brdf_mode == "envmap":
-                features_rest_len = self._features_rest.shape[1] * self._features_rest.shape[2]
-            for i in range(features_rest_len):
-                l.append("f_rest_{}".format(i))
+        for i in range(self._features_dc.shape[1] * self._features_dc.shape[2]):
+            l.append("f_dc_{}".format(i))
+        for i in range(self._features_rest.shape[1] * self._features_rest.shape[2]):
+            l.append("f_rest_{}".format(i))
         l.append("opacity")
         for i in range(self._scaling.shape[1]):
             l.append("scale_{}".format(i))
         for i in range(self._rotation.shape[1]):
             l.append("rot_{}".format(i))
-        if not viewer_fmt and self.brdf:
-            l.append("metallic")
-            for i in range(self._specular.shape[1]):
-                l.append("specular_{}".format(i))
-            l.append("roughness")
-            for i in range(self._albedo.shape[1]):
-                l.append("albedo_{}".format(i))
         return l
 
-    def save_ply(self, path, viewer_fmt=False):
+    def _construct_list_of_attributes_brdf(self, viewer_fmt=False):
+        l = ["x", "y", "z", "nx", "ny", "nz"]
+        l.extend(["nx0", "ny2", "nz2"])
+        # All channels except the 1 DC
+        assert self.brdf, "BRDF is not enabled!"
+        for i in range(self._features_dc.shape[-1] * self._features_dc.shape[2]):
+            l.append("f_dc_{}".format(i))
+        if self.brdf_mode == "envmap":
+            for i in range(self._features_rest.shape[-1] * self._features_rest.shape[2]):
+                l.append("f_rest_{}".format(i))
+        else:
+            raise NotImplementedError
+        # elif self.brdf_mode == "envmap" and self.brdf_dim == -2:
+        #   features_rest_len = self._features_rest.shape[-1]
+        l.append("opacity")
+        for i in range(self._scaling.shape[-1]):
+            l.append("scale_{}".format(i))
+        for i in range(self._rotation.shape[-1]):
+            l.append("rot_{}".format(i))
+        l.append("metallic")
+        for i in range(self._specular.shape[-1]):
+            l.append("specular_{}".format(i))
+        l.append("roughness")
+        for i in range(self._albedo.shape[-1]):
+            l.append("albedo_{}".format(i))
+        return l
+
+    def save_ply(self, path, brdf_params=True, viewer_fmt=False):
+        assert brdf_params and not self.brdf, "BRDF is not enabled!"
         mkdir_p(os.path.dirname(path))
 
         xyz = self._xyz.detach().cpu().numpy()
@@ -459,20 +472,21 @@ class GaussianModel:
         scale = self._scaling.detach().cpu().numpy()
         rotation = self._rotation.detach().cpu().numpy()
 
-        metallic = self._metallic.detach().cpu().numpy() if self.brdf else None
-        specular = self._specular.detach().cpu().numpy() if self.brdf else None
-        roughness = self._roughness.detach().cpu().numpy() if self.brdf else None
-        albedo = self._albedo.detach().cpu().numpy() if self.brdf else None
+        if brdf_params:
+            metallic = self._metallic.detach().cpu().numpy()
+            specular = self._specular.detach().cpu().numpy()
+            roughness = self._roughness.detach().cpu().numpy()
+            albedo = self._albedo.detach().cpu().numpy()
 
         if viewer_fmt:
             f_dc = 0.5 + (0.5 * normals)
             f_rest = np.zeros((f_rest.shape[0], 45))
             normals = np.zeros_like(normals)
 
-        dtype_full = [(attribute, "f4") for attribute in self.construct_list_of_attributes(viewer_fmt)]
+        dtype_full = [(attribute, "f4") for attribute in self.construct_list_of_attributes(brdf_params, viewer_fmt)]
 
         elements = np.empty(xyz.shape[0], dtype=dtype_full)
-        if self.brdf and not viewer_fmt:
+        if brdf_params and not viewer_fmt:
             attributes = np.concatenate(
                 (
                     xyz,
