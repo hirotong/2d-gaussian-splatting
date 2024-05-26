@@ -74,7 +74,8 @@ def simple_resize_image(img, size):
 
 def get_visual_hull2(N, bbox, scene_info, cam_center):
     [xs, ys, zs], [xe, ye, ze] = bbox[0], bbox[1]
-    xx, yy, zz = np.meshgrid(np.linspace(xs, xe, N), np.linspace(ys, ye, N), np.linspace(zs, ze, N), indexing="xy")
+    # invert the order of x and y, becuase usage for indexing the volume
+    xx, yy, zz = np.meshgrid(np.linspace(xs, xe, N), np.linspace(ys, ye, N), np.linspace(zs, ze, N), indexing="ij")
 
     coords = np.concatenate([xx[..., None], yy[..., None], zz[..., None]], axis=-1)  # (N, N, N, 3)
 
@@ -331,7 +332,7 @@ if __name__ == "__main__":
     # Calculate the center point of the original bounding box
     center = (bbox_min + bbox_max) / 2
     # Calculate the extents of the original bounding box
-    extents = (bbox_max - bbox_min).max()
+    extents = bbox_max - bbox_min
     # Calculate the scale factor to increase the size by 20% (1.2 times)
     scale_factor = 1.2
     # Calculate the scaled extents
