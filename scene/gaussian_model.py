@@ -435,7 +435,7 @@ class GaussianModel:
 
     def _construct_list_of_attributes_brdf(self, viewer_fmt=False):
         l = ["x", "y", "z", "nx", "ny", "nz"]
-        l.extend(["nx0", "ny2", "nz2"])
+        l.extend(["nx2", "ny2", "nz2"])
         # All channels except the 1 DC
         assert self.brdf, "BRDF is not enabled!"
         for i in range(self._features_dc.shape[1] * self._features_dc.shape[2]):
