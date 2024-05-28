@@ -1,4 +1,4 @@
-scenes=("car" "coffee" "helmet" "teapot" "toaster")
+scenes=("teapot" "toaster")
 for scene in ${scenes[@]}; do
     echo "Running scene: $scene"
     (

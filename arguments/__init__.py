@@ -101,12 +101,15 @@ class OptimizationParams(ParamGroup):
         self.feature_lr = 0.0025
         self.feature_lr_final = 0.000025
         self.opacity_lr = 0.05
-        self.scaling_lr = 0.001 # according to GaussianShader, 0.005 originally
+        self.scaling_lr = 0.001  # according to GaussianShader, 0.005 originally
         self.rotation_lr = 0.001
         self.percent_dense = 0.01
         self.lambda_dssim = 0.2
         self.lambda_dist = 0.0
         self.lambda_normal = 0.05
+
+        self.lambda_point_laplacian = 0.0
+
         self.opacity_cull = 0.005  # according to GaussianShader, 0.05 originally
 
         self.densification_interval = 100
@@ -114,8 +117,7 @@ class OptimizationParams(ParamGroup):
         self.densify_from_iter = 500
         self.densify_until_iter = 15_000
         self.densify_grad_threshold = 0.0002
-        
-        
+
         self.opacity_reset_until_iter = 30_000
 
         self.dist_reg_from_iter = 3_000
@@ -136,7 +138,7 @@ class OptimizationParams(ParamGroup):
         self.lambda_predicted_normal = 2e-1
         self.lambda_delta_reg = 1e-3
         self.fix_brdf_lr = 0
-        
+
         self.brdf_only_until_iter = 0
 
         super().__init__(parser, "Optimization Parameters")
@@ -163,3 +165,18 @@ def get_combined_args(parser: ArgumentParser):
         if v != None:
             merged_dict[k] = v
     return Namespace(**merged_dict)
+
+
+def get_config_args(model_path):
+    try:
+        cfgfilepath = os.path.join(model_path, "cfg_args")
+        print("Looking for config file in", cfgfilepath)
+        with open(cfgfilepath) as cfg_file:
+            print("Config file found: {}".format(cfgfilepath))
+            cfgfile_string = cfg_file.read()
+    except TypeError:
+        print("Config file not found at")
+        pass
+    args_cfgfile = eval(cfgfile_string)
+
+    return args_cfgfile

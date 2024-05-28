@@ -207,7 +207,7 @@ def laplacian_matrix(points, dist, indices):
     return L
 
 
-def point_laplacian_loss(sample_points, all_points, num_neighbors=12):
+def point_laplacian_loss(all_points, n_samples=10000, num_neighbors=12):
     """_summary_
 
     _extended_summary_
@@ -217,22 +217,30 @@ def point_laplacian_loss(sample_points, all_points, num_neighbors=12):
         all_points: (M, 3)
         num_neighbors: _description_. Defaults to 12.
     """
-    N = sample_points.shape[0]
+    all_points.retain_grad()
+    N = all_points.shape[0]
+    n_samples = min(n_samples, N)
+    sample_idx = torch.randint(0, N, (n_samples,))
+    sample_points = all_points[sample_idx]
     sample_points = sample_points.unsqueeze(0)
-    all_points = all_points.unsqueeze(0)
+    all_points = all_points.unsqueeze(0)        # .detach()
 
     # Find the nearest neighbors
     dist, idx, nn = knn_points(sample_points, all_points, K=num_neighbors + 1, return_nn=True)
 
+    # nn = nn[0, 1:]  # (N, K, 3)
+
     new_points = nn.reshape(-1, sample_points.shape[-1])  # (N * (K+1), 3)
-    new_indices = torch.arange(1, num_neighbors + 1).unsqueeze(0) + torch.arange(0, N).unsqueeze(1) * (
+    new_indices = torch.arange(1, num_neighbors + 1).unsqueeze(0) + torch.arange(0, n_samples).unsqueeze(1) * (
         num_neighbors + 1
     )  # (N, K)
     new_indices = new_indices.to(sample_points.device)
+    # new_points[new_indices.flatten()].requires_grad_(False)
 
     new_dists = dist[0, :, 1:]  # (N, K)
-    L = laplacian_matrix(new_points, new_dists, new_indices)
-    loss = L.mm(new_points).reshape(N, num_neighbors + 1, 3)
+    with torch.no_grad():
+        L = laplacian_matrix(new_points, new_dists, new_indices)
+    loss = L.mm(new_points).reshape(n_samples, num_neighbors + 1, 3)
     loss = loss[:, 0]
     loss = loss.norm(dim=1)
 
@@ -240,8 +248,11 @@ def point_laplacian_loss(sample_points, all_points, num_neighbors=12):
 
 
 if __name__ == "__main__":
-    all_points = torch.rand(10000000, 3).cuda()
-    sample_idx = torch.randint(0, all_points.shape[0], (10000,))
-    sample_points = all_points[sample_idx]
-    loss = point_laplacian_loss(sample_points, all_points)
-    print(loss)
+    all_points = torch.rand(100000, 3, requires_grad=True).cuda()
+    all_points.retain_grad()
+    # loss = torch.sum(all_points + 0.)
+    loss = point_laplacian_loss(all_points)
+    loss.backward()
+    print(all_points.grad.max())
+    
+    # print(sample_points.grad)

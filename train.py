@@ -30,6 +30,7 @@ from utils.loss_utils import (
     predicted_normal_loss,
     ssim,
     zero_one_loss,
+    point_laplacian_loss,
 )
 
 try:
@@ -68,6 +69,8 @@ def training(
     ema_loss_for_log = 0.0
     ema_dist_for_log = 0.0
     ema_normal_for_log = 0.0
+    ema_losses_for_log = {}
+
 
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
@@ -118,6 +121,10 @@ def training(
                 assert ()
             if "delta_normal_norm" in render_pkg.keys():
                 losses_extra["delta_reg"] = delta_normal_loss(render_pkg["delta_normal_norm"], render_pkg["rend_alpha"])
+        
+        # point laplacian loss
+        if gaussians.get_xyz.requires_grad:
+            losses_extra["point_laplacian"] = point_laplacian_loss(gaussians.get_xyz)
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
@@ -142,21 +149,28 @@ def training(
         loss.backward()
 
         iter_end.record()
+        
 
         with torch.no_grad():
             # Progress bar
-            ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
+            # ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
+            ema_losses_for_log["Loss"] = 0.4 * Ll1.item() + 0.6 * ema_losses_for_log.get("Loss", 0.0)
+            for k in losses_extra.keys():
+                ema_losses_for_log[k] = 0.4 * losses_extra[k].item() + 0.6 * ema_losses_for_log.get(k, 0.0)
+
             ema_dist_for_log = 0.4 * losses_extra["dist"].item() + 0.6 * ema_dist_for_log
             # ema_normal_for_log = 0.4 * normal_loss.item() + 0.6 * ema_normal_for_log
-            ema_normal_for_log = 0.4 * losses_extra["predicted_normal"] + 0.6 * ema_normal_for_log
+            # ema_normal_for_log = 0.4 * losses_extra["predicted_normal"] + 0.6 * ema_normal_for_log
 
             if iteration % 10 == 0:
-                loss_dict = {
-                    "Loss": f"{ema_loss_for_log:.{5}f}",
-                    "distort": f"{ema_dist_for_log:.{5}f}",
-                    "normal": f"{ema_normal_for_log:.{5}f}",
-                    "Points": f"{len(gaussians.get_xyz)}",
-                }
+                # loss_dict = {
+                #     "Loss": f"{ema_loss_for_log:.{5}f}",
+                #     "distort": f"{ema_dist_for_log:.{5}f}",
+                #     "normal": f"{ema_normal_for_log:.{5}f}",
+                #     "Points": f"{len(gaussians.get_xyz)}",
+                # }
+                loss_dict = {k: f"{v:.5f}" for k, v in ema_losses_for_log.items()}
+                loss_dict["Points"] = f"{len(gaussians.get_xyz)}"
                 progress_bar.set_postfix(loss_dict)
 
                 progress_bar.update(10)
@@ -361,8 +375,8 @@ if __name__ == "__main__":
     parser.add_argument("--ip", type=str, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=6009)
     parser.add_argument("--detect_anomaly", action="store_true", default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=list(range(0, 30_000, 1_000)))
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=list(range(0, 30_000, 1_000)))
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=list(range(0, 30_001, 1_000)))
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=list(range(0, 30_001, 1_000)))
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[30_000])
     parser.add_argument("--start_checkpoint", type=str, default=None)

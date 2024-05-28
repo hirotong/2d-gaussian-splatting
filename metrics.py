@@ -14,14 +14,33 @@ import os
 from argparse import ArgumentParser
 from pathlib import Path
 
+import numpy as np
+import open3d as o3d
 import torch
 import torchvision.transforms.functional as tf
+import trimesh
 from PIL import Image
 from tqdm import tqdm
 
+from arguments import get_config_args
 from lpipsPyTorch import lpips
 from utils.image_utils import psnr
 from utils.loss_utils import ssim
+from utils.mesh_utils import MeshEvaluator
+
+
+def convert_to_serializable(obj):
+    if isinstance(obj, (np.ndarray, torch.Tensor)):
+        return obj.tolist()
+    elif isinstance(obj, (np.float32, np.float64)):
+        return float(obj)
+    elif isinstance(obj, (np.int32, np.int64)):
+        return int(obj)
+    elif isinstance(obj, dict):
+        return {key: convert_to_serializable(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_to_serializable(element) for element in obj]
+    return obj
 
 
 def readImages(renders_dir, gt_dir):
@@ -104,6 +123,54 @@ def evaluate(model_paths):
     #     print("Unable to compute metrics for model", scene_dir)
 
 
+def evaluate_mesh(model_paths, n_points, visualize_pcd=True):
+    full_dict = {}
+    mesh_evaluator = MeshEvaluator(n_points)
+
+    for scene_dir in model_paths:
+        full_dict[scene_dir] = {}
+        print("Scene:", scene_dir)
+
+        cfg_args = get_config_args(scene_dir)
+        source_path = Path(cfg_args.source_path)
+
+        train_dir = Path(scene_dir) / "train"
+
+        for method in os.listdir(train_dir):
+            print("Method:", method)
+            method_dir = train_dir / method
+
+            mesh_pred = trimesh.load_mesh(method_dir / "fuse_post.ply", process=False)
+            o3d_pcd = o3d.io.read_point_cloud((source_path / "points_gt.ply").as_posix())
+
+            pointcloud_tgt = np.asarray(o3d_pcd.points)
+
+            mesh_eval_dict, pred2gt_pcd, gt2pred_pcd = mesh_evaluator.eval_mesh(
+                mesh_pred, pointcloud_tgt, None, visualize_pcd=visualize_pcd
+            )
+
+            if visualize_pcd:
+                save_dir = method_dir / "vis_pcd"
+
+                if not save_dir.exists():
+                    save_dir.mkdir()
+
+                o3d.io.write_point_cloud((save_dir / "pred2gt.ply").as_posix(), pred2gt_pcd)
+                o3d.io.write_point_cloud((save_dir / "gt2pred.ply").as_posix(), gt2pred_pcd)
+
+            mesh_eval_dict["n_points"] = n_points
+
+            full_dict[scene_dir][method] = mesh_eval_dict
+
+            print("  Mesh evaluation results:")
+            print("    Chamfer distance L1: {:>12.7f}".format(mesh_eval_dict["chamfer-L1"]))
+
+        serializable_data = convert_to_serializable(full_dict[scene_dir])
+
+        with open(scene_dir + "/results_mesh.json", "w") as fp:
+            json.dump(serializable_data, fp, indent=True)
+
+
 if __name__ == "__main__":
     device = torch.device("cuda:0")
     torch.cuda.set_device(device)
@@ -111,5 +178,13 @@ if __name__ == "__main__":
     # Set up command line argument parser
     parser = ArgumentParser(description="Training script parameters")
     parser.add_argument("--model_paths", "-m", required=True, nargs="+", type=str, default=[])
+    parser.add_argument("--skip_mesh", action="store_true")
+    parser.add_argument("--skip_metric", action="store_true")
+    parser.add_argument("--n_points", "-n", type=int, default=100_000)
     args = parser.parse_args()
-    evaluate(args.model_paths)
+
+    if not args.skip_metric:
+        evaluate(args.model_paths)
+
+    if not args.skip_mesh:
+        evaluate_mesh(args.model_paths, args.n_points)

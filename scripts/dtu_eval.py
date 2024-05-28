@@ -21,7 +21,7 @@ if not args.skip_metrics:
 
 
 if not args.skip_training:
-    common_args = " --quiet --test_iterations -1 --depth_ratio 1.0 -r 2 --lambda_dist 1000"
+    common_args = " --quiet --test_iterations -1 --depth_ratio 1.0 -r 2 --lambda_dist 1000 --brdf_dim 0 --sh_degree -1 --brdf_env 512 --shading gs"
     for scene in dtu_scenes:
         source = args.dtu + "/" + scene
         print("python train.py -s " + source + " -m " + args.output_path + "/" + scene + common_args)
