@@ -102,7 +102,7 @@ class Camera(nn.Module):
         intrinsic_matrix = torch.tensor(
             [[focal, 0, self.image_width / 2], [0, focal, self.image_height / 2], [0, 0, 1]]
         ).float()
-        extrinsic_matrix = self.world_view_transform.transpose(0, 1).contiguous()  # cam2world
+        extrinsic_matrix = self.world_view_transform.transpose(0, 1).contiguous()  # world2camera
         return intrinsic_matrix, extrinsic_matrix
 
     def get_rays(self):

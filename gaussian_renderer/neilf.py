@@ -22,16 +22,17 @@ from utils.point_utils import depth_to_normal
 from utils.sh_utils import eval_sh
 
 
-def rendered_world2cam(viewpoint_cam, normal, alpha, bg_color):
+def rendered_world2cam(viewpoint_cam: Camera, normal, alpha, bg_color):
     # normal: (3, H, W), alpha: (H, W), bg_color: (3)
     # normal_cam: (3, H, W)
     _, H, W = normal.shape
     intrinsic_matrix, extrinsic_matrix = viewpoint_cam.get_calib_matrix_nerf()
     normal_world = normal.permute(1, 2, 0).reshape(-1, 3)  # (HxW, 3)
-    normal_cam = (
-        torch.cat([normal_world, torch.ones_like(normal_world[..., 0:1])], axis=-1)
-        @ torch.inverse(torch.inverse(extrinsic_matrix).transpose(0, 1))[..., :3]
-    )
+    normal_cam = normal_world @ (torch.inverse(extrinsic_matrix[:3, :3]).transpose(0, 1)).T
+    # normal_cam = (
+    #     torch.cat([normal_world, torch.ones_like(normal_world[..., 0:1])], axis=-1)
+    #     @ torch.inverse(torch.inverse(extrinsic_matrix).transpose(0, 1))[..., :3]
+    # )
     normal_cam = normal_cam.reshape(H, W, 3).permute(2, 0, 1)  # (H, W, 3)
 
     background = bg_color[..., None, None]
@@ -290,7 +291,7 @@ def render(
     render_alpha = allmap[1:2]
 
     # get normal map
-    render_normal = allmap[2:5]
+    render_normal = allmap[2:5]     # (3, H, W)
     render_normal = (render_normal.permute(1, 2, 0) @ (viewpoint_camera.world_view_transform[:3, :3].T)).permute(
         2, 0, 1
     )
