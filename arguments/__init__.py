@@ -58,10 +58,12 @@ class ModelParams(ParamGroup):
         self.linear = False
         self.data_device = "cuda"
         self.eval = False
-        self.brdf_dim = 0
+        self.brdf_dim = -1
         self.brdf_mode = "envmap"
         self.brdf_envmap_res = 64
         self.shading = "gs"
+        self.use_global_shs = False
+        self.global_shs_degree = 3
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
@@ -75,15 +77,17 @@ class PipelineParams(ParamGroup):
     def __init__(self, parser):
         self.convert_SHs_python = False
         self.compute_cov3D_python = False
+        self.compute_neilf_python = False
         self.depth_ratio = 0.0
+        self.sample_num = 24
         self.debug = False
         super().__init__(parser, "Pipeline Parameters")
         self.brdf = False
 
     def extract(self, args):
         g = super().extract(args)
-        g.brdf = args.brdf_dim >= 0
-        if g.brdf:
+        g.brdf = args.shading in ["neilf"]
+        if args.shading == "pbr":
             g.convert_SHs_python = True
         g.brdf_mode = args.brdf_mode
         g.linear = args.linear
@@ -94,6 +98,7 @@ class PipelineParams(ParamGroup):
 class OptimizationParams(ParamGroup):
     def __init__(self, parser):
         self.iterations = 30_000
+
         self.position_lr_init = 0.00016
         self.position_lr_final = 0.0000016
         self.position_lr_delay_mult = 0.01
@@ -107,8 +112,8 @@ class OptimizationParams(ParamGroup):
         self.lambda_dssim = 0.2
         self.lambda_dist = 0.0
         self.lambda_normal = 0.05
-
         self.lambda_point_laplacian = 0.0
+        self.lambda_visibility = 0.001
 
         self.opacity_cull = 0.005  # according to GaussianShader, 0.05 originally
 
@@ -140,6 +145,20 @@ class OptimizationParams(ParamGroup):
         self.fix_brdf_lr = 0
 
         self.brdf_only_until_iter = 0
+
+        # lighting and visibility
+        self.env_lr = 0.0025
+        self.env_rest_lr = 0.0025
+        self.indirect_lr = 0.001
+        self.indirect_rest_lr = -1.0
+        self.visibility_lr = 0.0025
+        self.visibility_rest_lr = 0.0025
+
+        self.finetune_visibility = False
+
+        # learn gamma
+        self.use_ldr_image = False  # use learning gamma.
+        self.gamma_lr = 0.01
 
         super().__init__(parser, "Optimization Parameters")
 

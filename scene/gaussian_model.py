@@ -21,6 +21,7 @@ from torch import nn
 from arguments import OptimizationParams
 from scene.NVDIFFREC import create_trainable_env_rnd, load_env
 from utils.general_utils import (
+    build_inv_scaling_rotation,
     build_rotation,
     build_scaling_rotation,
     flip_align_view,
@@ -86,23 +87,28 @@ class GaussianModel:
         self.setup_functions()
 
         # brdf setting
-        self.brdf = brdf_dim >= 0
+        self.brdf = True    # brdf_dim >= 0
         self.brdf_dim = brdf_dim
         self.brdf_mode = brdf_mode
         self.brdf_envmap_res = brdf_envmap_res
 
-        self._normal = torch.empty(0)
-        self._normal2 = torch.empty(0)
-        self._metallic = torch.empty(0)
-        self._specular = torch.empty(0)
-        self._roughness = torch.empty(0)
-        self._albedo = torch.empty(0)
+        if self.brdf:
+            self._normal = torch.empty(0)
+            self._normal2 = torch.empty(0)
+            self._metallic = torch.empty(0)
+            self._specular = torch.empty(0)
+            self._roughness = torch.empty(0)
+            self._albedo = torch.empty(0)
+            self._visibility_dc = torch.empty(0)
+            self._visibility_rest = torch.empty(0)
+            self._indirect_dc = torch.empty(0)
+            self._indirect_rest = torch.empty(0)
 
-        self.default_metallic = 0.3
-        self.default_specular = [0.5, 0.5, 0.5]
-        self.default_roughness = 0.5
-        self.roughness_bias = 0.0
-        self.default_albedo = [0.3, 0.3, 0.3]
+            self.default_metallic = 0.3
+            self.default_specular = [0.5, 0.5, 0.5]
+            self.default_roughness = 0.5
+            self.roughness_bias = 0.0
+            self.default_albedo = [0.3, 0.3, 0.3]
 
         if self.brdf:
             self.brdf_mlp = create_trainable_env_rnd(self.brdf_envmap_res, scale=0.0, bias=0.8)
@@ -110,89 +116,85 @@ class GaussianModel:
             self.brdf_mlp = None
 
     def capture(self):
+        captured_list = [
+            self.active_sh_degree,
+            self._xyz,
+            self._features_dc,
+            self._features_rest,
+            self._scaling,
+            self._rotation,
+            self._opacity,
+            self.max_radii2D,
+            self.xyz_gradient_accum,
+            self.denom,
+            self.optimizer.state_dict(),
+            self.spatial_lr_scale,
+        ]
         if self.brdf:
-            return (
-                self.active_sh_degree,
-                self._xyz,
-                self._features_dc,
-                self._features_rest,
-                self._scaling,
-                self._rotation,
-                self._opacity,
-                self._metallic,
-                self._specular,
-                self._roughness,
-                self._albedo,
-                self._normal,
-                self._normal2,
-                self.max_radii2D,
-                self.xyz_gradient_accum,
-                self.denom,
-                self.optimizer.state_dict(),
-                self.spatial_lr_scale,
+            captured_list.extend(
+                [
+                    self._metallic,
+                    self._specular,
+                    self._roughness,
+                    self._albedo,
+                    self._normal,
+                    self._normal2,
+                    self._indirect_dc,
+                    self._indirect_rest,
+                    self._visibility_dc,
+                    self._visibility_rest,
+                ]
             )
-        else:
-            return (
-                self.active_sh_degree,
-                self._xyz,
-                self._features_dc,
-                self._features_rest,
-                self._scaling,
-                self._rotation,
-                self._opacity,
-                self.max_radii2D,
-                self.xyz_gradient_accum,
-                self.denom,
-                self.optimizer.state_dict(),
-                self.spatial_lr_scale,
-            )
+        return captured_list
 
     # TODO
-    def restore(self, model_args, training_args):
-        if self.brdf:
+    def restore(self, model_args, training_args, is_training=False, restore_optimizer=True):
+        (
+            self.active_sh_degree,
+            self._xyz,
+            self._features_dc,
+            self._features_rest,
+            self._scaling,
+            self._rotation,
+            self._opacity,
+            self.max_radii2D,
+            xyz_gradient_accum,
+            denom,
+            opt_dict,
+            self.spatial_lr_scale,
+        ) = model_args[:14]
+        if len(model_args) > 14 and self.brdf:
             (
-                self.active_sh_degree,
-                self._xyz,
-                self._features_dc,
-                self._features_rest,
-                self._scaling,
-                self._rotation,
-                self._opacity,
                 self._metallic,
                 self._specular,
                 self._roughness,
                 self._albedo,
                 self._normal,
                 self._normal2,
-                self.max_radii2D,
-                xyz_gradient_accum,
-                denom,
-                opt_dict,
-                self.spatial_lr_scale,
-            ) = model_args
-        else:
-            (
-                self.active_sh_degree,
-                self._xyz,
-                self._features_dc,
-                self._features_rest,
-                self._scaling,
-                self._rotation,
-                self._opacity,
-                self.max_radii2D,
-                xyz_gradient_accum,
-                denom,
-                opt_dict,
-                self.spatial_lr_scale,
-            ) = model_args
-        self.training_setup(training_args)
-        self.xyz_gradient_accum = xyz_gradient_accum
-        self.denom = denom
-        self.optimizer.load_state_dict(opt_dict)
+                self._indirect_dc,
+                self._indirect_rest,
+                self._visibility_dc,
+                self._visibility_rest,
+            ) = model_args[14:]
+        if is_training:
+            self.training_setup(training_args)
+            self.xyz_gradient_accum = xyz_gradient_accum
+            self.denom = denom
+            if restore_optimizer:
+                try:
+                    self.optimizer.load_state_dict(opt_dict)
+                except Exception as e:
+                    pass
 
     @property
     def get_scaling(self):
         return self.scaling_activation(self._scaling)  # .clamp(max=1)
+
+    @property
+    def get_scaling_3d(self, eps=1e-6):
+        scaling_2d = self.get_scaling
+        min_scaling = scaling_2d.new_ones((scaling_2d.shape[0], 1)) * eps
+        return torch.cat((scaling_2d, min_scaling), dim=1)
 
     @property
     def get_rotation(self):
@@ -215,8 +217,13 @@ class GaussianModel:
     def get_covariance(self, scaling_modifier=1):
         return self.covariance_activation(self.get_xyz, self.get_scaling, scaling_modifier, self._rotation)
 
+    def get_inv_covariance(self, scaling_modifier=1):
+        return self.covariance_activation(self.get_xyz, 1.0 / self.get_scaling, 1.0 / scaling_modifier, self._rotation)
+
     def get_normal(self, dir_pp_normalized=None, return_delta=False):
         normal_axis = self.get_normal_axis()
+        if dir_pp_normalized is None:
+            return normal_axis
         normal_axis, positive = flip_align_view(normal_axis, dir_pp_normalized)
         delta_normal1 = self._normal  # (N, 3)
         delta_normal2 = self._normal2  # (N, 3)
@@ -251,6 +258,28 @@ class GaussianModel:
         return self.albedo_activation(self._albedo)
 
     @property
+    def get_base_color(self):
+        return self.albedo_activation(self._albedo)
+
+    @property
+    def get_visibility(self):
+        """SH
+
+        Returns:
+            (n_points, degree**2, 1)
+        """
+        visibility_dc = self._visibility_dc
+        visibility_rest = self._visibility_rest
+        return torch.cat((visibility_dc, visibility_rest), dim=1)
+
+    @property
+    def get_indirect(self):
+        """SH"""
+        indirect_dc = self._indirect_dc
+        indirect_rest = self._indirect_rest
+        return torch.cat((indirect_dc, indirect_rest), dim=1)
+
+    @property
     def get_brdf_features(self):
         return self._features_rest
 
@@ -278,6 +307,7 @@ class GaussianModel:
             features = torch.zeros((fused_color.shape[0], 3, (self.brdf_dim + 1) ** 2 + 1)).float().cuda()
             features[:, :3, 0] = fused_color
             features[:, 3:, 1:] = 0.0
+
         else:
             raise NotImplementedError
 
@@ -324,6 +354,14 @@ class GaussianModel:
                 * torch.ones((fused_point_cloud.shape[0], 3), device="cuda").requires_grad_(True)
             )
 
+            indirects = torch.zeros((self._xyz.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
+            self._indirect_dc = nn.Parameter(indirects[:, :, 0:1].transpose(1, 2).contiguous().requires_grad_(True))
+            self._indirect_rest = nn.Parameter(indirects[:, :, 1:].transpose(1, 2).contiguous().requires_grad_(True))
+
+            visibility = torch.zeros((self._xyz.shape[0], 1, 4**2)).float().cuda()
+            self._visibility_dc = nn.Parameter(visibility[:, :, 0:1].transpose(1, 2).contiguous().requires_grad_(True))
+            self._visibility_rest = nn.Parameter(visibility[:, :, 1:].transpose(1, 2).contiguous().requires_grad_(True))
+
     def training_setup(self, training_args: OptimizationParams):
         self.fix_brdf_lr = training_args.fix_brdf_lr
         self.percent_dense = training_args.percent_dense
@@ -340,6 +378,11 @@ class GaussianModel:
         ]
 
         if self.brdf:
+            if training_args.indirect_rest_lr < 0:
+                training_args.indirect_rest_lr = training_args.indirect_lr / 20.0
+            if training_args.visibility_rest_lr < 0:
+                training_args.visibility_rest_lr = training_args.visibility_lr / 20.0
+
             self._normal.requires_grad_(requires_grad=False)
             l.extend(
                 [
@@ -353,6 +396,14 @@ class GaussianModel:
                     {"params": [self._specular], "lr": training_args.specular_lr, "name": "specular"},
                     {"params": [self._albedo], "lr": training_args.albedo_lr, "name": "albedo"},
                     {"params": [self._normal], "lr": training_args.normal_lr, "name": "normal"},
+                    {"params": [self._indirect_dc], "lr": training_args.indirect_lr, "name": "indirect_dc"},
+                    {"params": [self._indirect_rest], "lr": training_args.indirect_rest_lr, "name": "indirect_rest"},
+                    {"params": [self._visibility_dc], "lr": training_args.visibility_lr, "name": "visibility_dc"},
+                    {
+                        "params": [self._visibility_rest],
+                        "lr": training_args.visibility_rest_lr,
+                        "name": "visibility_rest",
+                    },
                 ]
             )
             self._normal2.requires_grad_(requires_grad=False)
@@ -458,6 +509,15 @@ class GaussianModel:
         l.append("roughness")
         for i in range(self._albedo.shape[-1]):
             l.append("albedo_{}".format(i))
+        for i in range(self._indirect_dc.shape[1] * self._indirect_dc.shape[2]):
+            l.append("indirect_dc_{}".format(i))
+        for i in range(self._indirect_rest.shape[1] * self._indirect_rest.shape[2]):
+            l.append("indirect_rest_{}".format(i))
+        for i in range(self._visibility_dc.shape[1] * self._visibility_dc.shape[2]):
+            l.append("visibility_dc_{}".format(i))
+        for i in range(self._visibility_rest.shape[1] * self._visibility_rest.shape[2]):
+            l.append("visibility_rest_{}".format(i))
+
         return l
 
     def save_ply(self, path, brdf_params=True, viewer_fmt=False):
@@ -473,11 +533,23 @@ class GaussianModel:
         scale = self._scaling.detach().cpu().numpy()
         rotation = self._rotation.detach().cpu().numpy()
 
+        attributes_list = [xyz, normals, normals2, f_dc, f_rest, opacities, scale, rotation]
+
         if brdf_params:
             metallic = self._metallic.detach().cpu().numpy()
             specular = self._specular.detach().cpu().numpy()
             roughness = self._roughness.detach().cpu().numpy()
             albedo = self._albedo.detach().cpu().numpy()
+            indirect_dc = self._indirect_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+            indirect_rest = self._indirect_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+            visibility_dc = self._visibility_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+            visibility_rest = (
+                self._visibility_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+            )
+
+            attributes_list.extend(
+                [metallic, specular, roughness, albedo, indirect_dc, indirect_rest, visibility_dc, visibility_rest]
+            )
 
         if viewer_fmt:
             f_dc = 0.5 + (0.5 * normals)
@@ -488,23 +560,7 @@ class GaussianModel:
 
         elements = np.empty(xyz.shape[0], dtype=dtype_full)
         if brdf_params and not viewer_fmt:
-            attributes = np.concatenate(
-                (
-                    xyz,
-                    normals,
-                    normals2,
-                    f_dc,
-                    f_rest,
-                    opacities,
-                    scale,
-                    rotation,
-                    metallic,
-                    specular,
-                    roughness,
-                    albedo,
-                ),
-                axis=1,
-            )
+            attributes = np.concatenate(attributes_list, axis=1)
         else:
             scale = np.concatenate((scale, -10 * np.ones((scale.shape[0], 1))), axis=1)
             attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
@@ -604,6 +660,32 @@ class GaussianModel:
                 axis=1,
             )
 
+            indirect_dc = np.zeros((xyz.shape[0], 3, 1))
+            indirect_dc[:, 0, 0] = np.asarray(plydata.elements[0]["indirect_dc_0"])
+            indirect_dc[:, 1, 0] = np.asarray(plydata.elements[0]["indirect_dc_1"])
+            indirect_dc[:, 2, 0] = np.asarray(plydata.elements[0]["indirect_dc_2"])
+            extra_indirect_names = [
+                p.name for p in plydata.elements[0].properties if p.name.startswith("indirect_rest_")
+            ]
+            extra_indirect_names = sorted(extra_indirect_names, key=lambda x: int(x.split("_")[-1]))
+            assert len(extra_indirect_names) == 3 * (self.max_sh_degree + 1) ** 2 - 3
+            indirect_extra = np.zeros((xyz.shape[0], len(extra_indirect_names)))
+            for idx, attr_name in enumerate(extra_indirect_names):
+                indirect_extra[:, idx] = np.asarray(plydata.elements[0][attr_name])
+            indirect_extra = indirect_extra.reshape((indirect_extra.shape[0], 3, (self.max_sh_degree + 1) ** 2 - 1))
+
+            visibility_dc = np.zeros((xyz.shape[0], 1, 1))
+            visibility_dc[:, 0, 0] = np.asarray(plydata.elements[0]["visibility_dc_0"])
+            extra_visibility_names = [
+                p.name for p in plydata.elements[0].properties if p.name.startswith("visibility_rest_")
+            ]
+            extra_visibility_names = sorted(extra_visibility_names, key=lambda x: int(x.split("_")[-1]))
+            assert len(extra_visibility_names) == 4**2 - 1
+            visibility_extra = np.zeros((xyz.shape[0], len(extra_visibility_names)))
+            for i, attr_name in enumerate(extra_visibility_names):
+                visibility_extra[:, i] = np.asarray(plydata.elements[0][attr_name])
+            visibility_extra = visibility_extra.reshape((visibility_extra.shape[0], 1, 4**2 - 1))
+
         self._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device="cuda").requires_grad_(True))
         self._features_dc = nn.Parameter(
             torch.tensor(features_dc, dtype=torch.float, device="cuda")
@@ -629,6 +711,30 @@ class GaussianModel:
             self._albedo = nn.Parameter(torch.tensor(albedo, dtype=torch.float, device="cuda").requires_grad_(True))
             self._normal = nn.Parameter(torch.tensor(normal, dtype=torch.float, device="cuda").requires_grad_(True))
             self._normal2 = nn.Parameter(torch.tensor(normal2, dtype=torch.float, device="cuda").requires_grad_(True))
+            self._indirect_dc = nn.Parameter(
+                torch.tensor(indirect_dc, dtype=torch.float, device="cuda")
+                .transpose(1, 2)
+                .contiguous()
+                .requires_grad_(True)
+            )
+            self._indirect_rest = nn.Parameter(
+                torch.tensor(indirect_extra, dtype=torch.float, device="cuda")
+                .transpose(1, 2)
+                .contiguous()
+                .requires_grad_(True)
+            )
+            self._visibility_dc = nn.Parameter(
+                torch.tensor(visibility_dc, dtype=torch.float, device="cuda")
+                .transpose(1, 2)
+                .contiguous()
+                .requires_grad_(True)
+            )
+            self._visibility_rest = nn.Parameter(
+                torch.tensor(visibility_extra, dtype=torch.float, device="cuda")
+                .transpose(1, 2)
+                .contiguous()
+                .requires_grad_(True)
+            )
 
         self.active_sh_degree = self.max_sh_degree
 
@@ -687,6 +793,10 @@ class GaussianModel:
             self._albedo = optimizable_tensors["albedo"]
             self._normal = optimizable_tensors["normal"]
             self._normal2 = optimizable_tensors["normal2"]
+            self._indirect_dc = optimizable_tensors["indirect_dc"]
+            self._indirect_rest = optimizable_tensors["indirect_rest"]
+            self._visibility_dc = optimizable_tensors["visibility_dc"]
+            self._visibility_rest = optimizable_tensors["visibility_rest"]
 
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
 
@@ -738,6 +848,10 @@ class GaussianModel:
         new_albedo,
         new_normal,
         new_normal2,
+        new_indirect_dc,
+        new_indirect_rest,
+        new_visibility_dc,
+        new_visibility_rest,
     ):
         d = {
             "xyz": new_xyz,
@@ -757,6 +871,10 @@ class GaussianModel:
                     "albedo": new_albedo,
                     "normal": new_normal,
                     "normal2": new_normal2,
+                    "indirect_dc": new_indirect_dc,
+                    "indirect_rest": new_indirect_rest,
+                    "visibility_dc": new_visibility_dc,
+                    "visibility_rest": new_visibility_rest,
                 }
             )
 
@@ -774,6 +892,11 @@ class GaussianModel:
             self._albedo = optimizable_tensors["albedo"]
             self._normal = optimizable_tensors["normal"]
             self._normal2 = optimizable_tensors["normal2"]
+            self._indirect_dc = optimizable_tensors["indirect_dc"]
+            self._indirect_rest = optimizable_tensors["indirect_rest"]
+            self._visibility_dc = optimizable_tensors["visibility_dc"]
+            self._visibility_rest = optimizable_tensors["visibility_rest"]
+
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
@@ -802,26 +925,35 @@ class GaussianModel:
         new_features_rest = self._features_rest[selected_pts_mask].repeat(N, 1, 1)
         new_opacity = self._opacity[selected_pts_mask].repeat(N, 1)
 
-        new_metallic = self._metallic[selected_pts_mask].repeat(N, 1) if self.brdf else None
-        new_specular = self._specular[selected_pts_mask].repeat(N, 1) if self.brdf else None
-        new_roughness = self._roughness[selected_pts_mask].repeat(N, 1) if self.brdf else None
-        new_albedo = self._albedo[selected_pts_mask].repeat(N, 1) if self.brdf else None
-        new_normal = self._normal[selected_pts_mask].repeat(N, 1) if self.brdf else None
-        new_normal2 = self._normal2[selected_pts_mask].repeat(N, 1) if (self.brdf) else None
-        self.densification_postfix(
-            new_xyz,
-            new_features_dc,
-            new_features_rest,
-            new_opacity,
-            new_scaling,
-            new_rotation,
-            new_metallic,
-            new_specular,
-            new_roughness,
-            new_albedo,
-            new_normal,
-            new_normal2,
-        )
+        args = [new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation]
+
+        if self.brdf:
+            new_metallic = self._metallic[selected_pts_mask].repeat(N, 1) if self.brdf else None
+            new_specular = self._specular[selected_pts_mask].repeat(N, 1) if self.brdf else None
+            new_roughness = self._roughness[selected_pts_mask].repeat(N, 1) if self.brdf else None
+            new_albedo = self._albedo[selected_pts_mask].repeat(N, 1) if self.brdf else None
+            new_normal = self._normal[selected_pts_mask].repeat(N, 1) if self.brdf else None
+            new_normal2 = self._normal2[selected_pts_mask].repeat(N, 1) if (self.brdf) else None
+            new_indirect_dc = self._indirect_dc[selected_pts_mask].repeat(N, 1, 1)
+            new_indirect_rest = self._indirect_rest[selected_pts_mask].repeat(N, 1, 1)
+            new_visibility_dc = self._visibility_dc[selected_pts_mask].repeat(N, 1, 1)
+            new_visibility_rest = self._visibility_rest[selected_pts_mask].repeat(N, 1, 1)
+
+            args.extend(
+                [
+                    new_metallic,
+                    new_specular,
+                    new_roughness,
+                    new_albedo,
+                    new_normal,
+                    new_normal2,
+                    new_indirect_dc,
+                    new_indirect_rest,
+                    new_visibility_dc,
+                    new_visibility_rest,
+                ]
+            )
+        self.densification_postfix(*args)
 
         prune_filter = torch.cat(
             (selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool))
@@ -843,27 +975,36 @@ class GaussianModel:
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
 
-        new_metallic = self._metallic[selected_pts_mask] if self.brdf else None
-        new_specular = self._specular[selected_pts_mask] if self.brdf else None
-        new_roughness = self._roughness[selected_pts_mask] if self.brdf else None
-        new_albedo = self._albedo[selected_pts_mask] if self.brdf else None
-        new_normal = self._normal[selected_pts_mask] if self.brdf else None
-        new_normal2 = self._normal2[selected_pts_mask] if (self.brdf) else None
+        args = [new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation]
 
-        self.densification_postfix(
-            new_xyz,
-            new_features_dc,
-            new_features_rest,
-            new_opacities,
-            new_scaling,
-            new_rotation,
-            new_metallic,
-            new_specular,
-            new_roughness,
-            new_albedo,
-            new_normal,
-            new_normal2,
-        )
+        if self.brdf:
+            new_metallic = self._metallic[selected_pts_mask] if self.brdf else None
+            new_specular = self._specular[selected_pts_mask] if self.brdf else None
+            new_roughness = self._roughness[selected_pts_mask] if self.brdf else None
+            new_albedo = self._albedo[selected_pts_mask] if self.brdf else None
+            new_normal = self._normal[selected_pts_mask] if self.brdf else None
+            new_normal2 = self._normal2[selected_pts_mask] if (self.brdf) else None
+            new_indirect_dc = self._indirect_dc[selected_pts_mask]
+            new_indirect_rest = self._indirect_rest[selected_pts_mask]
+            new_visibility_dc = self._visibility_dc[selected_pts_mask]
+            new_visibility_rest = self._visibility_rest[selected_pts_mask]
+
+            args.extend(
+                [
+                    new_metallic,
+                    new_specular,
+                    new_roughness,
+                    new_albedo,
+                    new_normal,
+                    new_normal2,
+                    new_indirect_dc,
+                    new_indirect_rest,
+                    new_visibility_dc,
+                    new_visibility_rest,
+                ]
+            )
+
+        self.densification_postfix(*args)
 
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
         grads = self.xyz_gradient_accum / self.denom
@@ -889,3 +1030,14 @@ class GaussianModel:
 
     def set_requires_grad(self, attrib_name, state: bool):
         getattr(self, f"_{attrib_name}").requires_grad = state
+
+    # def get_visibility_at(self, idx):
+    #     visibility_shs_view = self.get_visibility[idx].transpose(1, 2)  # (n, 1, degree**2)
+    #     vis_sh_degree = np.sqrt(visibility_shs_view.shape[-1]) - 1
+
+    # def sample_visibility(self, num_samples=10_000):
+    #     means3D = self.get_xyz
+    #     normals = self.get_normal()
+    #     opacities = self.get_opacity
+
+    #     rand_idx = torch.randperm(means3D.shape[0])[:num_samples]

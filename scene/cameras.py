@@ -31,6 +31,7 @@ class Camera(nn.Module):
         trans=np.array([0.0, 0.0, 0.0]),
         scale=1.0,
         data_device="cuda",
+        hdr=False,
         normal_image=None,
     ):
         super(Camera, self).__init__()
@@ -85,6 +86,7 @@ class Camera(nn.Module):
 
         self.trans = trans
         self.scale = scale
+        self.hdr = hdr
 
         self.world_view_transform = torch.tensor(getWorld2View2(R, T, trans, scale)).transpose(0, 1).cuda()
         self.projection_matrix = (

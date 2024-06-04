@@ -1,0 +1,11 @@
+LICENCE
+README.md
+setup.py
+/mnt/data2/code/opensource/2d-gaussian-splatting/bvh/src/bindings.cpp
+/mnt/data2/code/opensource/2d-gaussian-splatting/bvh/src/bvh.cu
+/mnt/data2/code/opensource/2d-gaussian-splatting/bvh/src/construct.cu
+/mnt/data2/code/opensource/2d-gaussian-splatting/bvh/src/trace.cu
+bvh_tracing.egg-info/PKG-INFO
+bvh_tracing.egg-info/SOURCES.txt
+bvh_tracing.egg-info/dependency_links.txt
+bvh_tracing.egg-info/top_level.txt

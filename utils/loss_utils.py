@@ -13,12 +13,15 @@ from math import exp
 
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
 from pytorch3d.ops import knn_points, knn_gather
 from utils.image_utils import erode
 from pytorch3d.loss import mesh_laplacian_smoothing
-
+from scene.gaussian_model import GaussianModel
+from utils.sh_utils import eval_sh
+from bvh import RayTracer
 
 def l1_loss(network_output, gt):
     return torch.abs((network_output - gt)).mean()
@@ -246,6 +249,66 @@ def point_laplacian_loss(all_points, n_samples=10000, num_neighbors=12):
 
     return loss.mean()
 
+def visibility_loss(pc: GaussianModel, num_samples=10_000):
+    
+    means3D = pc.get_xyz
+    visibility_shs = pc.get_visibility
+    normal = pc.get_normal()
+    opacity = pc.get_opacity
+    
+    rand_idx = torch.randperm(means3D.shape[0])[:num_samples]
+    rand_visibility_shs_view = visibility_shs.transpose(1, 2).view(-1, 1, 4**2)[rand_idx]
+    vis_sh_degree = np.sqrt(rand_visibility_shs_view.shape[-1]) - 1
+    rand_rays_o = means3D[rand_idx]
+    rand_rays_d = torch.rand_like(rand_rays_o) * 2 - 1  # original implementation uses randn
+    rand_rays_d /= rand_rays_d.norm(dim=-1, keepdim=True)
+    cov3D_inv = pc.get_inv_covariance()
+    rand_normal = normal[rand_idx]
+    mask = (rand_rays_d * rand_normal).sum(dim=-1) > 0
+    rand_normal[mask] *= -1
+    sample_sh2vis = eval_sh(vis_sh_degree, rand_visibility_shs_view, rand_rays_d)
+    sample_vis = torch.clamp(sample_sh2vis + 0.5, 0.0, 1.0)
+    raytracer = RayTracer(means3D, pc.get_scaling_3d, pc.get_rotation)
+    trace_results = raytracer.trace_visibility_2dgs(rand_rays_o, rand_rays_d, means3D, cov3D_inv, opacity, normal)
+    
+    rand_ray_visibility = trace_results["visibility"]
+    
+    loss_visibility = F.l1_loss(rand_ray_visibility, sample_vis)
+    
+    return loss_visibility
+
+def cal_gradient(data):
+    """
+    data: [1, C, H, W]
+    """
+    kernel_x = [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]]
+    kernel_x = torch.FloatTensor(kernel_x).unsqueeze(0).unsqueeze(0).to(data.device)
+    
+    kernel_y = [[-1, -2, -1], [0, 0, 0], [1, 2, 1]]
+    kernel_y = torch.FloatTensor(kernel_y).unsqueeze(0).unsqueeze(0).to(data.device)
+    
+    weight_x = nn.Parameter(data=kernel_x, requires_grad=False)
+    weight_y = nn.Parameter(data=kernel_y, requires_grad=False)
+    
+    grad_x = F.conv2d(data, weight_x, padding='same')
+    grad_y = F.conv2d(data, weight_y, padding='same')
+    gradient = torch.abs(grad_x) + torch.abs(grad_y)
+    
+    return gradient
+    
+
+def bilateral_smooth_loss(data, image, mask):
+    """
+    image: [C, H, W]
+    data: [C, H, W]
+    mask: [C, H, W]
+    """
+    rgb_grad = cal_gradient(image.mean(dim=0, keepdim=True).unsqueeze(0)).squeeze(0)    # [1, H, W]
+    data_grad = cal_gradient(data.mean(dim=0, keepdim=True).unsqueeze(0)).squeeze(0)    # [1, H, W]
+    
+    smooth_loss = (data_grad * (-rgb_grad).exp() * mask).mean()
+    
+    return smooth_loss
 
 if __name__ == "__main__":
     all_points = torch.rand(100000, 3, requires_grad=True).cuda()

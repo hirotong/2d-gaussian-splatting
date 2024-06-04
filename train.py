@@ -15,23 +15,30 @@ import uuid
 from argparse import ArgumentParser, Namespace
 from random import randint
 
+import numpy as np
 import torch
 from tqdm import tqdm
 
 from arguments import ModelParams, OptimizationParams, PipelineParams
-from gaussian_renderer import network_gui, render, render_lighting
+from gaussian_renderer import network_gui, render_fn_dict   # , render_lighting
 from scene import GaussianModel, Scene
+from scene.direct_light_sh import DirectLightEnv
+from scene.gamma_trans import LearningGammaTransform
 from scene.NVDIFFREC.light import extract_env_map
 from utils.general_utils import safe_state
 from utils.image_utils import linear2srgb, psnr, srgb2linear
 from utils.loss_utils import (
     delta_normal_loss,
     l1_loss,
+    point_laplacian_loss,
     predicted_normal_loss,
     ssim,
     zero_one_loss,
-    point_laplacian_loss,
+    visibility_loss,
 )
+from bvh import RayTracer
+import torch.nn.functional as F
+from utils.sh_utils import eval_sh
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -48,17 +55,60 @@ def training(
     testing_iterations,
     saving_iterations,
     checkpoint_iterations,
-    checkpoint,
 ):
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree, dataset.brdf_dim, dataset.brdf_mode, dataset.brdf_envmap_res)
     scene = Scene(dataset, gaussians)
     gaussians.training_setup(opt)
-    if checkpoint:
-        (model_params, first_iter) = torch.load(checkpoint)
+    if args.checkpoint:
+        (model_params, first_iter) = torch.load(args.checkpoint)
         gaussians.restore(model_params, opt)
 
+    """
+    Setup PBR components
+    """
+    pbr_kwargs = dict()
+    if pipe.brdf:
+        pbr_kwargs["sample_num"] = pipe.sample_num
+        if dataset.use_global_shs == 1:
+            print("Using global incident light for regularization.")
+            direct_env_light = DirectLightEnv(dataset.global_shs_degree)
+
+            if args.checkpoint:
+                env_checkpoint = os.path.dirname(args.checkpoint) + "/env_light_" + os.path.basename(args.checkpoint)
+                print("Trying to load global incident light from ", env_checkpoint)
+                if os.path.exists(env_checkpoint):
+                    direct_env_light.create_from_ckpt(env_checkpoint, restore_optimizer=True)
+                    print("Successfully loaded!")
+                else:
+                    print("Failed to load!")
+
+            direct_env_light.training_setup(opt)
+            pbr_kwargs["env_light"] = direct_env_light
+
+        if opt.use_ldr_image:
+            print("Using learning gamma transform.")
+            gamma_transform = LearningGammaTransform(opt.use_ldr_image)
+
+            if args.checkpoint:
+                gamma_checkpoint = os.path.dirname(args.checkpoint) + "/gamma_" + os.path.basename(args.checkpoint)
+                print("Trying to load gamma checkpoint from ", gamma_checkpoint)
+                if os.path.exists(gamma_checkpoint):
+                    gamma_transform.create_from_ckpt(gamma_checkpoint, restore_optimizer=True)
+                    print("Successfully loaded!")
+                else:
+                    print("Failed to load!")
+
+            gamma_transform.training_setup(opt)
+            pbr_kwargs["gamma"] = gamma_transform
+
+        if opt.finetune_visibility:
+            finetune_visibility(gaussians, 10)
+            # gaussians.finetune_visibility()
+
+    """ Prepare render function and bg"""
+    render_fn = render_fn_dict[dataset.shading]
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
@@ -70,7 +120,6 @@ def training(
     ema_dist_for_log = 0.0
     ema_normal_for_log = 0.0
     ema_losses_for_log = {}
-
 
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
@@ -97,7 +146,9 @@ def training(
             gaussians.set_requires_grad("xyz", state=iteration > opt.brdf_only_until_iter)
 
         # Render
-        render_pkg = render(viewpoint_cam, gaussians, pipe, background, debug=False)
+        render_pkg = render_fn(
+            viewpoint_cam, gaussians, pipe, background, is_training=True, dict_params=pbr_kwargs
+        )
         image, viewspace_point_tensor, visibility_filter, radii = (
             render_pkg["render"],
             render_pkg["viewspace_points"],
@@ -121,10 +172,13 @@ def training(
                 assert ()
             if "delta_normal_norm" in render_pkg.keys():
                 losses_extra["delta_reg"] = delta_normal_loss(render_pkg["delta_normal_norm"], render_pkg["rend_alpha"])
-        
+            
+            if opt.lambda_visibility > 0:
+                losses_extra["visibility"] = visibility_loss(gaussians)
+
         # point laplacian loss
-        if gaussians.get_xyz.requires_grad:
-            losses_extra["point_laplacian"] = point_laplacian_loss(gaussians.get_xyz)
+        # if gaussians.get_xyz.requires_grad:
+        #     losses_extra["point_laplacian"] = point_laplacian_loss(gaussians.get_xyz)
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
@@ -149,7 +203,6 @@ def training(
         loss.backward()
 
         iter_end.record()
-        
 
         with torch.no_grad():
             # Progress bar
@@ -198,8 +251,8 @@ def training(
                 iter_start.elapsed_time(iter_end),
                 testing_iterations,
                 scene,
-                render,
-                (pipe, background, 1.0, None, True, False),
+                render_fn,
+                (pipe, background, 1.0, None, False, pbr_kwargs, True, False),
             )
             if iteration in saving_iterations:
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
@@ -227,6 +280,12 @@ def training(
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none=True)
+                
+                for component in pbr_kwargs.values():
+                    try:
+                        component.step()
+                    except:
+                        pass
 
             # clamp the environment map
             if pipe.brdf and pipe.brdf_mode == "envmap":
@@ -235,6 +294,53 @@ def training(
             if iteration in checkpoint_iterations:
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
+                for com_name, component in pbr_kwargs.items():
+                    try:
+                        torch.save(
+                            (component.capture(), iteration),
+                            os.path.join(scene.model_path, f"{com_name}_chkpnt" + str(iteration) + ".pth"),
+                        )
+                        print("\n[ITER {}] Saving Checkpoint".format(iteration))
+                    except:
+                        pass
+
+                    print("[ITER {}] Saving {} Checkpoint".format(iteration, com_name))
+
+
+def finetune_visibility(gaussians: GaussianModel, iterations=1000):
+    visibility_sh_lr = 0.01
+    optimizer = torch.optim.Adam([
+        {"params": [gaussians._visibility_dc], "lr": visibility_sh_lr},
+        {"params": [gaussians._visibility_rest], "lr": visibility_sh_lr},
+    ])
+    
+    means3D = gaussians.get_xyz
+    opacity = gaussians.get_opacity
+    scaling = gaussians.get_scaling_3d
+    rotation = gaussians.get_rotation
+    normal = gaussians.get_normal()
+    cov3D_inv = gaussians.get_inv_covariance()
+    visibility_shs_view = gaussians.get_visibility.transpose(1, 2)
+    vis_sh_degree = np.sqrt(visibility_shs_view.shape[-1]) - 1
+    rays_o = means3D
+    tbar = tqdm(range(iterations), desc="Finetuning visibility shs")
+    raytracer = RayTracer(means3D, scaling, rotation)
+
+    for iteration in tbar:
+        rays_d = torch.rand_like(rays_o) * 2 - 1
+        rays_d = F.normalize(rays_d, p=2, dim=-1)
+        mask = (rays_d * normal).sum(dim=-1) < 0
+        rays_d[mask] *= -1
+        visibility_shs_view = gaussians.get_visibility.transpose(1, 2)
+        sample_sh2vis = eval_sh(vis_sh_degree, visibility_shs_view, rays_d)
+        sample_vis = torch.clamp(sample_sh2vis + 0.5, 0.0, 1.0)
+        trace_results = raytracer.trace_visibility_2dgs(rays_o, rays_d, means3D, cov3D_inv, opacity, normal)
+        visibility = trace_results["visibility"]
+        loss = F.l1_loss(sample_vis, visibility)
+        loss.backward()
+        optimizer.step()
+        optimizer.zero_grad()
+        tbar.set_postfix({"loss": loss.item()})
 
 
 def prepare_output_and_logger(args):
@@ -296,8 +402,9 @@ def training_report(
         )
         if tb_writer:
             if pipe.brdf:
-                lighting = render_lighting(scene.gaussians, resolution=(512, 1024))
-                tb_writer.add_images("lighting", lighting[None], global_step=iteration)
+                pass
+                # lighting = render_lighting(scene.gaussians, resolution=(512, 1024))
+                # tb_writer.add_images("lighting", lighting[None], global_step=iteration)
 
         for config in validation_configs:
             if config["cameras"] and len(config["cameras"]) > 0:
@@ -329,7 +436,7 @@ def training_report(
                         )
 
                         for k in render_pkg.keys():
-                            if render_pkg[k].dim() < 3 or k in ["render", "surf_depth"]:
+                            if k in ["hdr", "val_gamma", "render", "surf_depth"] or render_pkg[k].dim() < 3:
                                 continue
                             elif "normal" in k:
                                 image_k = render_pkg[k] * 0.5 + 0.5
@@ -379,7 +486,8 @@ if __name__ == "__main__":
     parser.add_argument("--save_iterations", nargs="+", type=int, default=list(range(0, 30_001, 1_000)))
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[30_000])
-    parser.add_argument("--start_checkpoint", type=str, default=None)
+    parser.add_argument("-c", "--checkpoint", type=str, default=None)
+    # parser.add_argument("-t", "--type", choices=["3dgs", "neilf"], default="3dgs")
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
 
@@ -398,7 +506,6 @@ if __name__ == "__main__":
         args.test_iterations,
         args.save_iterations,
         args.checkpoint_iterations,
-        args.start_checkpoint,
     )
 
     # All done

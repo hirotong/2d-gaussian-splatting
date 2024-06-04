@@ -120,6 +120,17 @@ def build_scaling_rotation(s, r):
     L = R @ L
     return L
 
+def build_inv_scaling_rotation(s, r):
+    L = torch.zeros((s.shape[0], 3, 3), dtype=torch.float, device="cuda")
+    R = build_rotation(r)
+
+    L[:, 0, 0] = 1.0 / s[:, 0]
+    L[:, 1, 1] = 1.0 / s[:, 1]
+    L[:, 2, 2] = 1.0 / s[:, 2]
+
+    L = L @ R.T
+    return L
+
 
 def safe_state(silent):
     old_f = sys.stdout

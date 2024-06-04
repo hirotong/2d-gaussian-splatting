@@ -1,0 +1,8 @@
+CompileFlags:
+  Add:
+    # - -I${workspaceFolder}/**
+    - -I/usr/local/cuda/targets/x86_64-linux/include
+    - -I/home/hiro/miniconda3/envs/surfel_splatting/lib/python3.8/site-packages/torch/include/torch/csrc/api/include
+    - -I/home/hiro/miniconda3/envs/surfel_splatting/lib/python3.8/site-packages/torch/include
+    - -I/home/hiro/miniconda3/envs/surfel_splatting/lib/python3.8/site-packages/torch/include/THC
+    - -I${workspaceFolder}/bvh/include
