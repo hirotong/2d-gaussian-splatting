@@ -93,6 +93,11 @@ def zero_one_loss(img):
     loss = torch.mean(torch.log(val) + torch.log(1 - val))
     return loss
 
+def mask_entropy_loss(mask, gt):
+    zero_epsilon = 1e-6
+    mask = torch.clamp(mask, zero_epsilon, 1 - zero_epsilon)
+    loss = -torch.mean(gt * torch.log(mask) + (1 - gt) * torch.log(1 - mask))
+    return loss
 
 def predicted_normal_loss(normal, normal_ref, alpha=None):
     """Computes the predicted normal supervision loss defined in ref-NeRF."""

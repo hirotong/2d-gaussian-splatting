@@ -238,3 +238,4 @@ def fibonacci_sphere_sampling(normals, sample_num, random_rotate=True):
         incident_dirs = incident_dirs.reshape(*pre_shape, sample_num, 3)
         incident_areas = incident_areas.reshape(*pre_shape, sample_num, 1)
     return incident_dirs, incident_areas
+

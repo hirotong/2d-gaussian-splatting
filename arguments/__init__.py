@@ -58,18 +58,23 @@ class ModelParams(ParamGroup):
         self.linear = False
         self.data_device = "cuda"
         self.eval = False
-        self.brdf_dim = -1
-        self.brdf_mode = "envmap"
-        self.brdf_envmap_res = 64
-        self.shading = "gs"
-        self.use_global_shs = False
+        self.render_type = "2dgs"  # ["neilf", "2dgs", "gaushader"]
+
+        # environment light
+        self.env_light_type = "shs"  # "envmap"
+        # envmap parameters
+        self.envmap_res = 64
+        self.envmap_res_dim = -1
+
+        ## global shs
+        self.num_global_shs = 12
         self.global_shs_degree = 3
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
         g = super().extract(args)
         g.source_path = os.path.abspath(g.source_path)
-        g.brdf = g.brdf_dim >= 0
+        g.brdf = g.render_type != "2dgs"
         return g
 
 
@@ -86,12 +91,12 @@ class PipelineParams(ParamGroup):
 
     def extract(self, args):
         g = super().extract(args)
-        g.brdf = args.shading in ["neilf"]
-        if args.shading == "pbr":
+        g.brdf = args.render_type != "2dgs"
+        if args.render_type == "gaushader":
             g.convert_SHs_python = True
-        g.brdf_mode = args.brdf_mode
+        # g.brdf_mode = args.brdf_mode
         g.linear = args.linear
-        g.shading = args.shading
+        g.render_type = args.render_type
         return g
 
 
@@ -109,24 +114,21 @@ class OptimizationParams(ParamGroup):
         self.scaling_lr = 0.001  # according to GaussianShader, 0.005 originally
         self.rotation_lr = 0.001
         self.percent_dense = 0.01
-        self.lambda_dssim = 0.2
-        self.lambda_dist = 0.0
-        self.lambda_normal = 0.05
-        self.lambda_point_laplacian = 0.0
-        self.lambda_visibility = 0.001
 
         self.opacity_cull = 0.005  # according to GaussianShader, 0.05 originally
 
+        # iterations
         self.densification_interval = 100
         self.opacity_reset_interval = 3000
         self.densify_from_iter = 500
         self.densify_until_iter = 15_000
         self.densify_grad_threshold = 0.0002
-
         self.opacity_reset_until_iter = 30_000
-
         self.dist_reg_from_iter = 3_000
         self.dist_reg_until_iter = 30_000
+        self.point_laplacian_reg_from_iter = 3_000
+        self.point_laplacian_reg_until_iter = 30_000
+
         # pbr
         self.brdf_mlp_lr_init = 1.6e-2
         self.brdf_mlp_lr_final = 1.6e-3
@@ -139,9 +141,7 @@ class OptimizationParams(ParamGroup):
         self.albedo_lr = 0.0002
         self.normal_reg_from_iter = 0
         self.normal_reg_util_iter = 30_000
-        self.lambda_zero_one = 1e-3
-        self.lambda_predicted_normal = 2e-1
-        self.lambda_delta_reg = 1e-3
+
         self.fix_brdf_lr = 0
 
         self.brdf_only_until_iter = 0
@@ -149,6 +149,7 @@ class OptimizationParams(ParamGroup):
         # lighting and visibility
         self.env_lr = 0.0025
         self.env_rest_lr = 0.0025
+        self.env_rotation_lr = 0.001
         self.indirect_lr = 0.001
         self.indirect_rest_lr = -1.0
         self.visibility_lr = 0.0025
@@ -159,6 +160,28 @@ class OptimizationParams(ParamGroup):
         # learn gamma
         self.use_ldr_image = False  # use learning gamma.
         self.gamma_lr = 0.01
+
+        # loss weights
+        # image
+        self.lambda_image = 0.1
+        self.lambda_dssim = 0.2
+        self.lambda_pbr = 1.0
+        self.lambda_dist = 1.0
+        self.lambda_point_laplacian = 0.
+        self.lambda_albedo = 0.1
+        self.lambda_albedo_smooth = 0.002
+        self.lambda_metallic_smooth = 0.002
+        self.lambda_roughness_smooth = 0.002
+        # alpha mask
+        self.lambda_mask_entropy = 0.1
+        self.lambda_mask_zero_one = 0.005
+        # normal
+        # self.lambda_normal = 0.05
+        self.lambda_predicted_normal = 2e-1
+        self.lambda_delta_reg = 1e-3
+        # mislc
+        self.lambda_light = 0.001
+        self.lambda_visibility = 0.1  # 0.001
 
         super().__init__(parser, "Optimization Parameters")
 

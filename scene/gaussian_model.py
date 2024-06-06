@@ -65,9 +65,9 @@ class GaussianModel:
         self.inverse_roughness_activation = inverse_sigmoid
         self.inverse_albedo_activation = inverse_sigmoid
 
-    def __init__(self, sh_degree: int, brdf_dim: int, brdf_mode: str, brdf_envmap_res: int):
-        if (brdf_dim >= 0 and sh_degree >= 0) or (brdf_dim < 0 and sh_degree < 0):
-            raise Exception("Please provide exactly one of either brdf_dim or sh_degree!")
+    def __init__(self, sh_degree: int, render_type="render"):
+        self.render_type = render_type
+        self.brdf = render_type in ["neilf"]
 
         self.active_sh_degree = 0
         self.max_sh_degree = sh_degree
@@ -87,10 +87,6 @@ class GaussianModel:
         self.setup_functions()
 
         # brdf setting
-        self.brdf = True    # brdf_dim >= 0
-        self.brdf_dim = brdf_dim
-        self.brdf_mode = brdf_mode
-        self.brdf_envmap_res = brdf_envmap_res
 
         if self.brdf:
             self._normal = torch.empty(0)
@@ -110,10 +106,12 @@ class GaussianModel:
             self.roughness_bias = 0.0
             self.default_albedo = [0.3, 0.3, 0.3]
 
-        if self.brdf:
-            self.brdf_mlp = create_trainable_env_rnd(self.brdf_envmap_res, scale=0.0, bias=0.8)
-        else:
-            self.brdf_mlp = None
+        # if self.brdf:
+        #     self.env_light = create_trainable_env_rnd(self.brdf_envmap_res, scale=0.0, bias=0.8)
+        # else:
+        #     self.env_light = None
+        self.env_light = None
+        self.gamma_transform = None
 
     def capture(self):
         captured_list = [
@@ -162,8 +160,8 @@ class GaussianModel:
             denom,
             opt_dict,
             self.spatial_lr_scale,
-        ) = model_args[:14]
-        if len(model_args) > 14 and self.brdf:
+        ) = model_args[:12]
+        if len(model_args) > 12 and self.brdf:
             (
                 self._metallic,
                 self._specular,
@@ -297,19 +295,19 @@ class GaussianModel:
     def create_from_pcd(self, pcd: BasicPointCloud, spatial_lr_scale: float):
         self.spatial_lr_scale = spatial_lr_scale
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
-        if not self.brdf:
-            fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
-            features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
-            features[:, :3, 0] = fused_color
-            features[:, 3:, 1:] = 0.0
-        elif self.brdf_mode == "envmap":
-            fused_color = torch.tensor(np.asarray(pcd.colors)).float().cuda()
-            features = torch.zeros((fused_color.shape[0], 3, (self.brdf_dim + 1) ** 2 + 1)).float().cuda()
-            features[:, :3, 0] = fused_color
-            features[:, 3:, 1:] = 0.0
+        # if not self.brdf:
+        fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
+        features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
+        features[:, :3, 0] = fused_color
+        features[:, 3:, 1:] = 0.0
+        # elif self.brdf_mode == "envmap":
+        # fused_color = torch.tensor(np.asarray(pcd.colors)).float().cuda()
+        # features = torch.zeros((fused_color.shape[0], 3, (self.brdf_dim + 1) ** 2 + 1)).float().cuda()
+        # features[:, :3, 0] = fused_color
+        # features[:, 3:, 1:] = 0.0
 
-        else:
-            raise NotImplementedError
+        # else:
+        #     raise NotImplementedError
 
         print("Number of points at initialisation : ", fused_point_cloud.shape[0])
 
@@ -362,6 +360,86 @@ class GaussianModel:
             self._visibility_dc = nn.Parameter(visibility[:, :, 0:1].transpose(1, 2).contiguous().requires_grad_(True))
             self._visibility_rest = nn.Parameter(visibility[:, :, 1:].transpose(1, 2).contiguous().requires_grad_(True))
 
+    def create_from_ckpt(self, checkpoint_path, restore_optimizer=False):
+        (model_args, first_iter) = torch.load(checkpoint_path)
+
+        (
+            self.active_sh_degree,
+            self._xyz,
+            self._features_dc,
+            self._features_rest,
+            self._scaling,
+            self._rotation,
+            self._opacity,
+            self.max_radii2D,
+            xyz_gradient_accum,
+            denom,
+            opt_dict,
+            self.spatial_lr_scale,
+        ) = model_args[:12]
+
+        self.xyz_gradient_accum = xyz_gradient_accum
+        self.denom = denom
+
+        if self.brdf:
+            if len(model_args) > 12:
+                (
+                    self._metallic,
+                    self._specular,
+                    self._roughness,
+                    self._albedo,
+                    self._normal,
+                    self._normal2,
+                    self._indirect_dc,
+                    self._indirect_rest,
+                    self._visibility_dc,
+                    self._visibility_rest,
+                ) = model_args[14:]
+            else:
+                self._normal = nn.Parameter(torch.zeros_like(self._xyz).requires_grad_(True))
+                self._normal2 = nn.Parameter(torch.zeros_like(self._xyz).requires_grad_(True))
+                self._metallic = nn.Parameter(
+                    self.inverse_metallic_activation(
+                        self.default_metallic * torch.ones((self._xyz.shape[0], 1), device="cuda")
+                    ).requires_grad_(True)
+                )
+                self._specular = nn.Parameter(
+                    self.inverse_specular_activation(torch.tensor(self.default_specular, device="cuda")[None])
+                    * torch.ones((self._xyz.shape[0], 3), device="cuda").requires_grad_(True)
+                )
+                self._roughness = nn.Parameter(
+                    self.inverse_roughness_activation(
+                        self.default_roughness * torch.ones((self._xyz.shape[0], 1), device="cuda")
+                    ).requires_grad_(True)
+                )
+                self._albedo = nn.Parameter(
+                    self.inverse_albedo_activation(torch.tensor(self.default_albedo, device="cuda")[None])
+                    * torch.ones((self._xyz.shape[0], 3), device="cuda").requires_grad_(True)
+                )
+
+                indirects = torch.zeros((self._xyz.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
+                self._indirect_dc = nn.Parameter(indirects[:, :, 0:1].transpose(1, 2).contiguous().requires_grad_(True))
+                self._indirect_rest = nn.Parameter(
+                    indirects[:, :, 1:].transpose(1, 2).contiguous().requires_grad_(True)
+                )
+
+                visibility = torch.zeros((self._xyz.shape[0], 1, 4**2)).float().cuda()
+                self._visibility_dc = nn.Parameter(
+                    visibility[:, :, 0:1].transpose(1, 2).contiguous().requires_grad_(True)
+                )
+                self._visibility_rest = nn.Parameter(
+                    visibility[:, :, 1:].transpose(1, 2).contiguous().requires_grad_(True)
+                )
+
+        if restore_optimizer:
+            try:
+                self.optimizer.load_state_dict(opt_dict)
+            except Exception as e:
+                print("Not loading optimizer state_dict!")
+
+        # TODO: Load the environment light and gamma transform.
+        return first_iter
+
     def training_setup(self, training_args: OptimizationParams):
         self.fix_brdf_lr = training_args.fix_brdf_lr
         self.percent_dense = training_args.percent_dense
@@ -386,11 +464,6 @@ class GaussianModel:
             self._normal.requires_grad_(requires_grad=False)
             l.extend(
                 [
-                    {
-                        "params": list(self.brdf_mlp.parameters()),
-                        "lr": training_args.brdf_mlp_lr_init,
-                        "name": "brdf_mlp",
-                    },
                     {"params": [self._metallic], "lr": training_args.metallic_lr, "name": "metallic"},
                     {"params": [self._roughness], "lr": training_args.roughness_lr, "name": "roughness"},
                     {"params": [self._specular], "lr": training_args.specular_lr, "name": "specular"},
@@ -491,11 +564,8 @@ class GaussianModel:
         assert self.brdf, "BRDF is not enabled!"
         for i in range(self._features_dc.shape[1] * self._features_dc.shape[2]):
             l.append("f_dc_{}".format(i))
-        if self.brdf_mode == "envmap":
-            for i in range(self._features_rest.shape[1] * self._features_rest.shape[2]):
-                l.append("f_rest_{}".format(i))
-        else:
-            raise NotImplementedError
+        for i in range(self._features_rest.shape[1] * self._features_rest.shape[2]):
+            l.append("f_rest_{}".format(i))
         # elif self.brdf_mode == "envmap" and self.brdf_dim == -2:
         #   features_rest_len = self._features_rest.shape[-1]
         l.append("opacity")
@@ -573,6 +643,17 @@ class GaussianModel:
         pcd_o3d.colors = o3d.utility.Vector3dVector(f_dc)
         return pcd_o3d
 
+    def save_ckpt(self, model_path, iteration):
+        print("\n[ITER {}] Saving Gaussian Checkpoint".format(iteration))
+        torch.save((self.capture(), iteration), os.path.join(model_path, f"ckpt_{iteration}.pth"))
+
+        # TODO: save the environment light and gamma transform seperately outside of the model.
+        # if self.env_light is not None:
+        #     self.env_light.save_ckpt(model_path, iteration)
+
+        # if self.gamma_transform is not None:
+        #     self.gamma_transform.save_ckpt(model_path, iteration)
+
     def reset_opacity(self):
         opacities_new = inverse_sigmoid(torch.min(self.get_opacity, torch.ones_like(self.get_opacity) * 0.01))
         optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
@@ -599,23 +680,24 @@ class GaussianModel:
 
         extra_f_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("f_rest_")]
         extra_f_names = sorted(extra_f_names, key=lambda x: int(x.split("_")[-1]))
-        if not self.brdf:
-            assert len(extra_f_names) == 3 * (self.max_sh_degree + 1) ** 2 - 3
-            features_extra = np.zeros((xyz.shape[0], len(extra_f_names)))
-            for idx, attr_name in enumerate(extra_f_names):
-                features_extra[:, idx] = np.asarray(plydata.elements[0][attr_name])
-            # Reshape (P,F*SH_coeffs) to (P, F, SH_coeffs except DC)
-            features_extra = features_extra.reshape((features_extra.shape[0], 3, (self.max_sh_degree + 1) ** 2 - 1))
-        elif self.brdf_mode == "envmap":
-            features_extra = np.zeros((xyz.shape[0], 3 * (self.brdf_dim + 1) ** 2))
-            if len(extra_f_names) == 3 * (self.brdf_dim + 1) ** 2:
-                for idx, attr_name in enumerate(extra_f_names):
-                    features_extra[:, idx] = np.asarray(plydata.elements[0][attr_name])
-            else:
-                print("NO INITIAL SH FEATURES FOUND!!! USE ZERO SH AS INITIALIZE.")
-            features_extra = features_extra.reshape((features_extra.shape[0], 3, (self.brdf_dim + 1) ** 2))
-        else:
-            raise NotImplementedError
+        assert len(extra_f_names) == 3 * (self.max_sh_degree + 1) ** 2 - 3
+        features_extra = np.zeros((xyz.shape[0], len(extra_f_names)))
+        for idx, attr_name in enumerate(extra_f_names):
+            features_extra[:, idx] = np.asarray(plydata.elements[0][attr_name])
+        # Reshape (P,F*SH_coeffs) to (P, F, SH_coeffs except DC)
+        features_extra = features_extra.reshape((features_extra.shape[0], 3, (self.max_sh_degree + 1) ** 2 - 1))
+        # TODO: fix this part.
+        
+        # elif self.brdf_mode == "envmap":
+        #     features_extra = np.zeros((xyz.shape[0], 3 * (self.brdf_dim + 1) ** 2))
+        #     if len(extra_f_names) == 3 * (self.brdf_dim + 1) ** 2:
+        #         for idx, attr_name in enumerate(extra_f_names):
+        #             features_extra[:, idx] = np.asarray(plydata.elements[0][attr_name])
+        #     else:
+        #         print("NO INITIAL SH FEATURES FOUND!!! USE ZERO SH AS INITIALIZE.")
+        #     features_extra = features_extra.reshape((features_extra.shape[0], 3, (self.brdf_dim + 1) ** 2))
+        # else:
+        #     raise NotImplementedError
 
         scale_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("scale_")]
         scale_names = sorted(scale_names, key=lambda x: int(x.split("_")[-1]))
@@ -842,16 +924,16 @@ class GaussianModel:
         new_opacities,
         new_scaling,
         new_rotation,
-        new_metallic,
-        new_specular,
-        new_roughness,
-        new_albedo,
-        new_normal,
-        new_normal2,
-        new_indirect_dc,
-        new_indirect_rest,
-        new_visibility_dc,
-        new_visibility_rest,
+        new_metallic=None,
+        new_specular=None,
+        new_roughness=None,
+        new_albedo=None,
+        new_normal=None,
+        new_normal2=None,
+        new_indirect_dc=None,
+        new_indirect_rest=None,
+        new_visibility_dc=None,
+        new_visibility_rest=None,
     ):
         d = {
             "xyz": new_xyz,

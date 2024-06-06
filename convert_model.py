@@ -15,7 +15,7 @@ import torch
 from tqdm import tqdm
 
 from arguments import ModelParams, get_combined_args
-from gaussian_renderer import network_gui, render, render_lighting
+from gaussian_renderer import gaushader, network_gui, render_lighting
 from scene import GaussianModel, Scene
 from scene.NVDIFFREC.light import extract_env_map
 from utils.general_utils import safe_state

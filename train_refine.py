@@ -19,7 +19,7 @@ import torch
 from tqdm import tqdm
 
 from arguments import ModelParams, OptimizationParams, PipelineParams
-from gaussian_renderer import network_gui, render, render_lighting
+from gaussian_renderer import gaushader, network_gui, render_lighting
 from scene import GaussianModel, Scene
 from scene.NVDIFFREC.light import extract_env_map
 from utils.general_utils import safe_state
@@ -51,7 +51,7 @@ def training(
 ):
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
-    gaussians = GaussianModel(dataset.sh_degree, dataset.brdf_dim, dataset.brdf_mode, dataset.brdf_envmap_res)
+    gaussians = GaussianModel(dataset.sh_degree, dataset.envmap_res_dim, dataset.brdf_mode, dataset.envmap_res)
     scene = Scene(dataset, gaussians)
     gaussians.training_setup(opt)
     if checkpoint:
@@ -89,12 +89,12 @@ def training(
             gaussians.set_requires_grad("normal", state=iteration >= opt.normal_reg_from_iter)
             gaussians.set_requires_grad("normal2", state=iteration >= opt.normal_reg_from_iter)
             if gaussians.brdf_mode == "envmap":
-                gaussians.brdf_mlp.build_mips()
+                gaussians.env_light.build_mips()
 
             gaussians.set_requires_grad("xyz", state=iteration > opt.brdf_only_until_iter)
 
         # Render
-        render_pkg = render(viewpoint_cam, gaussians, pipe, background, debug=False)
+        render_pkg = gaushader(viewpoint_cam, gaussians, pipe, background, debug=False)
         image, viewspace_point_tensor, visibility_filter, radii = (
             render_pkg["render"],
             render_pkg["viewspace_points"],
@@ -184,7 +184,7 @@ def training(
                 iter_start.elapsed_time(iter_end),
                 testing_iterations,
                 scene,
-                render,
+                gaushader,
                 (pipe, background, 1.0, None, True, False),
             )
             if iteration in saving_iterations:
@@ -216,7 +216,7 @@ def training(
 
             # clamp the environment map
             if pipe.brdf and pipe.brdf_mode == "envmap":
-                gaussians.brdf_mlp.clamp_(min=0.0, max=10.0)
+                gaussians.env_light.clamp_(min=0.0, max=10.0)
 
             if iteration in checkpoint_iterations:
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))

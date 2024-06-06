@@ -13,31 +13,33 @@ import os
 import sys
 import uuid
 from argparse import ArgumentParser, Namespace
+from collections import defaultdict
 from random import randint
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from tqdm import tqdm
 
 from arguments import ModelParams, OptimizationParams, PipelineParams
-from gaussian_renderer import network_gui, render_fn_dict   # , render_lighting
+from bvh import RayTracer
+from gaussian_renderer import network_gui, render_fn_dict  # , render_lighting
 from scene import GaussianModel, Scene
 from scene.direct_light_sh import DirectLightEnv
 from scene.gamma_trans import LearningGammaTransform
-from scene.NVDIFFREC.light import extract_env_map
+from scene.NVDIFFREC.light import extract_env_map, create_trainable_env_rnd
 from utils.general_utils import safe_state
-from utils.image_utils import linear2srgb, psnr, srgb2linear
+from utils.image_utils import linear2srgb, psnr, hdr2ldr
 from utils.loss_utils import (
     delta_normal_loss,
     l1_loss,
     point_laplacian_loss,
     predicted_normal_loss,
     ssim,
-    zero_one_loss,
     visibility_loss,
+    zero_one_loss,
 )
-from bvh import RayTracer
-import torch.nn.functional as F
+
 from utils.sh_utils import eval_sh
 
 try:
@@ -58,12 +60,12 @@ def training(
 ):
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
-    gaussians = GaussianModel(dataset.sh_degree, dataset.brdf_dim, dataset.brdf_mode, dataset.brdf_envmap_res)
+    gaussians = GaussianModel(dataset.sh_degree, dataset.render_type)
     scene = Scene(dataset, gaussians)
     gaussians.training_setup(opt)
     if args.checkpoint:
-        (model_params, first_iter) = torch.load(args.checkpoint)
-        gaussians.restore(model_params, opt)
+        print("Create Gaussians from checkpoint {}".format(args.checkpoint))
+        first_iter = gaussians.create_from_ckpt(args.checkpoint, restore_optimizer=True)
 
     """
     Setup PBR components
@@ -71,9 +73,11 @@ def training(
     pbr_kwargs = dict()
     if pipe.brdf:
         pbr_kwargs["sample_num"] = pipe.sample_num
-        if dataset.use_global_shs == 1:
+        if dataset.env_light_type == "shs":
             print("Using global incident light for regularization.")
-            direct_env_light = DirectLightEnv(dataset.global_shs_degree)
+            assert dataset.global_shs_degree > 0, "Global SH degree must be greater than 0."
+            direct_env_light = DirectLightEnv(dataset.num_global_shs, dataset.global_shs_degree)
+            direct_env_light.training_setup(opt)
 
             if args.checkpoint:
                 env_checkpoint = os.path.dirname(args.checkpoint) + "/env_light_" + os.path.basename(args.checkpoint)
@@ -84,12 +88,17 @@ def training(
                 else:
                     print("Failed to load!")
 
-            direct_env_light.training_setup(opt)
-            pbr_kwargs["env_light"] = direct_env_light
+            gaussians.env_light = direct_env_light
+
+            # pbr_kwargs["env_light"] = direct_env_light
+        elif dataset.env_light_type == "envmap":
+            # envmap =
+            pass
 
         if opt.use_ldr_image:
             print("Using learning gamma transform.")
             gamma_transform = LearningGammaTransform(opt.use_ldr_image)
+            gamma_transform.training_setup(opt)
 
             if args.checkpoint:
                 gamma_checkpoint = os.path.dirname(args.checkpoint) + "/gamma_" + os.path.basename(args.checkpoint)
@@ -99,16 +108,15 @@ def training(
                     print("Successfully loaded!")
                 else:
                     print("Failed to load!")
-
-            gamma_transform.training_setup(opt)
-            pbr_kwargs["gamma"] = gamma_transform
+            # pbr_kwargs["gamma"] = gamma_transform
+            gaussians.gamma_transform = gamma_transform
 
         if opt.finetune_visibility:
-            finetune_visibility(gaussians, 10)
+            finetune_visibility(gaussians, 1000)
             # gaussians.finetune_visibility()
 
     """ Prepare render function and bg"""
-    render_fn = render_fn_dict[dataset.shading]
+    render_fn = render_fn_dict[dataset.render_type]
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
@@ -116,10 +124,7 @@ def training(
     iter_end = torch.cuda.Event(enable_timing=True)
 
     viewpoint_stack = None
-    ema_loss_for_log = 0.0
-    ema_dist_for_log = 0.0
-    ema_normal_for_log = 0.0
-    ema_losses_for_log = {}
+    ema_losses_for_log = defaultdict(int)
 
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
@@ -140,14 +145,15 @@ def training(
         if pipe.brdf:
             gaussians.set_requires_grad("normal", state=iteration >= opt.normal_reg_from_iter)
             gaussians.set_requires_grad("normal2", state=iteration >= opt.normal_reg_from_iter)
-            if gaussians.brdf_mode == "envmap":
-                gaussians.brdf_mlp.build_mips()
+            if dataset.env_light_type == "envmap":
+                gaussians.env_light.build_mips()
 
             gaussians.set_requires_grad("xyz", state=iteration > opt.brdf_only_until_iter)
 
         # Render
+        pbr_kwargs.update({"iteration": iteration})
         render_pkg = render_fn(
-            viewpoint_cam, gaussians, pipe, background, is_training=True, dict_params=pbr_kwargs
+            viewpoint_cam, gaussians, pipe, background, opt=opt, is_training=True, dict_params=pbr_kwargs
         )
         image, viewspace_point_tensor, visibility_filter, radii = (
             render_pkg["render"],
@@ -155,37 +161,38 @@ def training(
             render_pkg["visibility_filter"],
             render_pkg["radii"],
         )
-        losses_extra = {}
-        if pipe.brdf:
-            if iteration >= opt.normal_reg_from_iter and iteration < opt.normal_reg_util_iter:
-                losses_extra["predicted_normal"] = predicted_normal_loss(
-                    render_pkg["normal_view"], render_pkg["surf_normal"], render_pkg["rend_alpha"]
-                )
-            else:
-                losses_extra["predicted_normal"] = torch.tensor(0.0, device="cuda")
-            losses_extra["zero_one"] = zero_one_loss(render_pkg["rend_alpha"])
-            if iteration >= opt.dist_reg_from_iter and iteration < opt.dist_reg_until_iter:
-                losses_extra["dist"] = render_pkg["rend_dist"].mean()
-            else:
-                losses_extra["dist"] = torch.tensor(0.0, device="cuda")
-            if "delta_normal_norm" not in render_pkg.keys() and opt.lambda_delta_reg > 0:
-                assert ()
-            if "delta_normal_norm" in render_pkg.keys():
-                losses_extra["delta_reg"] = delta_normal_loss(render_pkg["delta_normal_norm"], render_pkg["rend_alpha"])
-            
-            if opt.lambda_visibility > 0:
-                losses_extra["visibility"] = visibility_loss(gaussians)
+
+        # losses_extra = {}
+        # if pipe.brdf:
+        #     if iteration >= opt.normal_reg_from_iter and iteration < opt.normal_reg_util_iter:
+        #         losses_extra["predicted_normal"] = predicted_normal_loss(
+        #             render_pkg["normal_view"], render_pkg["surf_normal"], render_pkg["rend_alpha"]
+        #         )
+        #     else:
+        #         losses_extra["predicted_normal"] = torch.tensor(0.0, device="cuda")
+        #     losses_extra["zero_one"] = zero_one_loss(render_pkg["rend_alpha"])
+        #     if iteration >= opt.dist_reg_from_iter and iteration < opt.dist_reg_until_iter:
+        #         losses_extra["dist"] = render_pkg["rend_dist"].mean()
+        #     else:
+        #         losses_extra["dist"] = torch.tensor(0.0, device="cuda")
+        #     if "delta_normal_norm" not in render_pkg.keys() and opt.lambda_delta_reg > 0:
+        #         assert ()
+        #     if "delta_normal_norm" in render_pkg.keys():
+        #         losses_extra["delta_reg"] = delta_normal_loss(render_pkg["delta_normal_norm"], render_pkg["rend_alpha"])
+
+        #     if opt.lambda_visibility > 0:
+        #         losses_extra["visibility"] = visibility_loss(gaussians)
 
         # point laplacian loss
         # if gaussians.get_xyz.requires_grad:
         #     losses_extra["point_laplacian"] = point_laplacian_loss(gaussians.get_xyz)
 
         # Loss
-        gt_image = viewpoint_cam.original_image.cuda()
-        Ll1 = l1_loss(image, gt_image)
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
-        for k in losses_extra.keys():
-            loss += getattr(opt, f"lambda_{k}") * losses_extra[k]
+        # gt_image = viewpoint_cam.original_image.cuda()
+        # Ll1 = l1_loss(image, gt_image)
+        # loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+        # for k in losses_extra.keys():
+        #     loss += getattr(opt, f"lambda_{k}") * losses_extra[k]
         # # regularization
         # # lambda_normal = opt.lambda_normal if iteration > 7000 else 0.0
         # lambda_dist = opt.lambda_dist if iteration > 3000 else 0.0
@@ -199,62 +206,32 @@ def training(
 
         # # loss
         # total_loss = loss + dist_loss  # + normal_loss
-
+        loss = 0.0
+        tb_dict = render_pkg["tb_dict"]
+        loss += render_pkg["loss"]
         loss.backward()
 
         iter_end.record()
 
         with torch.no_grad():
             # Progress bar
-            # ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
-            ema_losses_for_log["Loss"] = 0.4 * Ll1.item() + 0.6 * ema_losses_for_log.get("Loss", 0.0)
-            for k in losses_extra.keys():
-                ema_losses_for_log[k] = 0.4 * losses_extra[k].item() + 0.6 * ema_losses_for_log.get(k, 0.0)
-
-            ema_dist_for_log = 0.4 * losses_extra["dist"].item() + 0.6 * ema_dist_for_log
-            # ema_normal_for_log = 0.4 * normal_loss.item() + 0.6 * ema_normal_for_log
-            # ema_normal_for_log = 0.4 * losses_extra["predicted_normal"] + 0.6 * ema_normal_for_log
+            for k in tb_dict.keys():
+                if k in ["psnr", "psnr_pbr", "loss"]:
+                    ema_losses_for_log[k] = 0.4 * tb_dict[k] + 0.6 * ema_losses_for_log[k]
 
             if iteration % 10 == 0:
-                # loss_dict = {
-                #     "Loss": f"{ema_loss_for_log:.{5}f}",
-                #     "distort": f"{ema_dist_for_log:.{5}f}",
-                #     "normal": f"{ema_normal_for_log:.{5}f}",
-                #     "Points": f"{len(gaussians.get_xyz)}",
-                # }
                 loss_dict = {k: f"{v:.5f}" for k, v in ema_losses_for_log.items()}
                 loss_dict["Points"] = f"{len(gaussians.get_xyz)}"
                 progress_bar.set_postfix(loss_dict)
 
                 progress_bar.update(10)
+                # Log and save
+            training_report(tb_writer, iteration, tb_dict, scene, render_fn, pipe, background, dict_params=pbr_kwargs)
+
             if iteration == opt.iterations:
                 progress_bar.close()
 
-            # Keep track of max radii in image-space for pruning
-            gaussians.max_radii2D[visibility_filter] = torch.max(
-                gaussians.max_radii2D[visibility_filter], radii[visibility_filter]
-            )
-
-            # Log and save
-            losses_extra["psnr"] = psnr(image, gt_image).mean()
-            if tb_writer is not None:
-                tb_writer.add_scalar("train_loss_patches/dist_loss", ema_dist_for_log, iteration)
-                tb_writer.add_scalar("train_loss_patches/normal_loss", ema_normal_for_log, iteration)
-
-            training_report(
-                tb_writer,
-                iteration,
-                Ll1,
-                loss,
-                losses_extra,
-                l1_loss,
-                iter_start.elapsed_time(iter_end),
-                testing_iterations,
-                scene,
-                render_fn,
-                (pipe, background, 1.0, None, False, pbr_kwargs, True, False),
-            )
-            if iteration in saving_iterations:
+            if iteration % args.save_interval == 0 or iteration in saving_iterations:
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
 
@@ -280,40 +257,32 @@ def training(
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none=True)
-                
-                for component in pbr_kwargs.values():
-                    try:
-                        component.step()
-                    except:
-                        pass
+
+                if pipe.brdf:
+                    gaussians.env_light.step()
+                    gaussians.gamma_transform.step()
 
             # clamp the environment map
-            if pipe.brdf and pipe.brdf_mode == "envmap":
-                gaussians.brdf_mlp.clamp_(min=0.0, max=10.0)
+            if pipe.brdf and dataset.env_light_type == "envmap":
+                gaussians.env_light.clamp_(min=0.0, max=10.0)
 
-            if iteration in checkpoint_iterations:
-                print("\n[ITER {}] Saving Checkpoint".format(iteration))
-                torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
-                for com_name, component in pbr_kwargs.items():
-                    try:
-                        torch.save(
-                            (component.capture(), iteration),
-                            os.path.join(scene.model_path, f"{com_name}_chkpnt" + str(iteration) + ".pth"),
-                        )
-                        print("\n[ITER {}] Saving Checkpoint".format(iteration))
-                    except:
-                        pass
+            if iteration % args.checkpoint_interval == 0 or iteration in checkpoint_iterations:
+                gaussians.save_ckpt(scene.model_path, iteration)
 
-                    print("[ITER {}] Saving {} Checkpoint".format(iteration, com_name))
+                if pipe.brdf:
+                    gaussians.env_light.save_ckpt(scene.model_path, iteration)
+                    gaussians.gamma_transform.save_ckpt(scene.model_path, iteration)
 
 
 def finetune_visibility(gaussians: GaussianModel, iterations=1000):
     visibility_sh_lr = 0.01
-    optimizer = torch.optim.Adam([
-        {"params": [gaussians._visibility_dc], "lr": visibility_sh_lr},
-        {"params": [gaussians._visibility_rest], "lr": visibility_sh_lr},
-    ])
-    
+    optimizer = torch.optim.Adam(
+        [
+            {"params": [gaussians._visibility_dc], "lr": visibility_sh_lr},
+            {"params": [gaussians._visibility_rest], "lr": visibility_sh_lr},
+        ]
+    )
+
     means3D = gaussians.get_xyz
     opacity = gaussians.get_opacity
     scaling = gaussians.get_scaling_3d
@@ -370,28 +339,24 @@ def prepare_output_and_logger(args):
 def training_report(
     tb_writer,
     iteration,
-    Ll1,
-    loss,
-    losses_extra,
-    l1_loss,
-    elapsed,
-    testing_iterations,
+    tb_dict,
     scene: Scene,
     renderFunc,
-    renderArgs,
+    pipe: PipelineParams,
+    bg_color: torch.Tensor,
+    scaling_modifier=1.0,
+    override_color=None,
+    opt: OptimizationParams = None,
+    is_training=False,
+    **kwargs,
 ):
-    pipe = renderArgs[0]
     if tb_writer:
-        tb_writer.add_scalar("train_loss_patches/L1_loss", Ll1.item(), iteration)
-        tb_writer.add_scalar("train_loss_patches/total_loss", loss.item(), iteration)
-        tb_writer.add_scalar("iter_time", elapsed, iteration)
-        tb_writer.add_scalar("total_points", scene.gaussians.get_xyz.shape[0], iteration)
+        for k, v in tb_dict.items():
+            tb_writer.add_scalar(f"train_loss_patches/{k}", v, iteration)
         tb_writer.add_histogram("scene/opacity_histogram", scene.gaussians.get_opacity, iteration)
-        for k in losses_extra.keys():
-            tb_writer.add_scalar(f"train_loss_patches/{k}_loss", losses_extra[k].item(), iteration)
 
     # Report test and samples of training set
-    if iteration in testing_iterations:
+    if iteration % args.test_interval == 0 or iteration in args.test_iterations:
         torch.cuda.empty_cache()
         validation_configs = (
             {"name": "test", "cameras": scene.getTestCameras()},
@@ -400,9 +365,11 @@ def training_report(
                 "cameras": [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(5, 30, 5)],
             },
         )
+        # save lighting image
         if tb_writer:
             if pipe.brdf:
                 pass
+                # TODO: render lighting
                 # lighting = render_lighting(scene.gaussians, resolution=(512, 1024))
                 # tb_writer.add_images("lighting", lighting[None], global_step=iteration)
 
@@ -410,40 +377,66 @@ def training_report(
             if config["cameras"] and len(config["cameras"]) > 0:
                 l1_test = 0.0
                 psnr_test = 0.0
+                psnr_pbr_test = 0.0
                 for idx, viewpoint in enumerate(config["cameras"]):
-                    render_pkg = renderFunc(viewpoint, scene.gaussians, *renderArgs)
-                    image = torch.clamp(render_pkg["render"], 0.0, 1.0)
-                    gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
-                    if pipe.linear:
-                        image = linear2srgb(image)
-                        gt_image = linear2srgb(gt_image)
+                    render_pkg = renderFunc(
+                        viewpoint,
+                        scene.gaussians,
+                        pipe,
+                        bg_color,
+                        scaling_modifier,
+                        override_color,
+                        opt,
+                        is_training,
+                        **kwargs,
+                    )
+
+                    hdr = render_pkg["hdr"]
+
+                    image = render_pkg["render"]
+                    gt_image = viewpoint.original_image.to("cuda")
+                    image_pbr = render_pkg.get("render_pbr", torch.zeros_like(image))
+
+                    if hdr:
+                        image = hdr2ldr(image)
+                        gt_image = hdr2ldr(gt_image)
+                        image_pbr = hdr2ldr(image_pbr)
+                    else:
+                        image = torch.clamp(image, min=0.0, max=1.0)
+                        gt_image = torch.clamp(gt_image, min=0.0, max=1.0)
+                        image_pbr = torch.clamp(image_pbr, min=0.0, max=1.0)
+
                     if tb_writer and (idx < 5):
                         from utils.general_utils import colormap
 
-                        depth = render_pkg["surf_depth"]
-                        norm = depth.max()
-                        depth = depth / norm
-                        depth = colormap(depth.cpu().numpy()[0], cmap="turbo")
-                        tb_writer.add_images(
-                            config["name"] + "_view_{}/depth".format(viewpoint.image_name),
-                            depth[None],
-                            global_step=iteration,
-                        )
                         tb_writer.add_images(
                             config["name"] + "_view_{}/render".format(viewpoint.image_name),
                             image[None],
                             global_step=iteration,
                         )
+                        tb_writer.add_images(
+                            config["name"] + "_view_{}/render_pbr".format(viewpoint.image_name),
+                            image_pbr[None],
+                            global_step=iteration,
+                        )
 
                         for k in render_pkg.keys():
-                            if k in ["hdr", "val_gamma", "render", "surf_depth"] or render_pkg[k].dim() < 3:
+                            if not isinstance(render_pkg[k], torch.Tensor):
                                 continue
-                            elif "normal" in k:
-                                image_k = render_pkg[k] * 0.5 + 0.5
+                            elif k in ["render", "render_pbr"] or render_pkg[k].dim() < 3:
+                                continue
+                            elif k in ["surf_depth"]:
+                                image_k = render_pkg["surf_depth"]
+                                norm = image_k.max()
+                                image_k = image_k / norm
+                                image_k = colormap(image_k.cpu().numpy()[0], cmap="turbo")
                             elif k in ["rend_dist", "delta_normal_norm"]:
                                 image_k = colormap(render_pkg[k].cpu().numpy()[0])
-                            elif pipe.linear and k in ["albedo", "diffse_color", "specular_color"]:
-                                image_k = torch.clamp(linear2srgb(render_pkg[k]), min=0.0, max=1.0)
+                            elif "normal" in k:
+                                image_k = render_pkg[k] * 0.5 + 0.5
+                            elif k in ["albedo", "diffse_color", "specular_color"]:
+                                # TODO: deal with color space
+                                image_k = torch.clamp(render_pkg[k], min=0.0, max=1.0)
                             else:
                                 image_k = torch.clamp(render_pkg[k], min=0.0, max=1.0)
 
@@ -453,7 +446,7 @@ def training_report(
                                 global_step=iteration,
                             )
 
-                        if iteration == testing_iterations[0]:
+                        if iteration == args.test_iterations[0]:
                             tb_writer.add_images(
                                 config["name"] + "_view_{}/ground_truth".format(viewpoint.image_name),
                                 gt_image[None],
@@ -462,13 +455,20 @@ def training_report(
 
                     l1_test += l1_loss(image, gt_image).mean().double()
                     psnr_test += psnr(image, gt_image).mean().double()
+                    psnr_pbr_test += psnr(image_pbr, gt_image).mean().double()
 
                 psnr_test /= len(config["cameras"])
                 l1_test /= len(config["cameras"])
-                print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config["name"], l1_test, psnr_test))
+                psnr_pbr_test /= len(config["cameras"])
+                print(
+                    "\n[ITER {}] Evaluating {}: L1 {} PSNR {} PSNR_PBR {}".format(
+                        iteration, config["name"], l1_test, psnr_test, psnr_pbr_test
+                    )
+                )
                 if tb_writer:
                     tb_writer.add_scalar(config["name"] + "/loss_viewpoint - l1_loss", l1_test, iteration)
                     tb_writer.add_scalar(config["name"] + "/loss_viewpoint - psnr", psnr_test, iteration)
+                    tb_writer.add_scalar(config["name"] + "/loss_viewpoint - psnr_pbr", psnr_pbr_test, iteration)
         torch.cuda.empty_cache()
 
 
@@ -482,11 +482,14 @@ if __name__ == "__main__":
     parser.add_argument("--ip", type=str, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=6009)
     parser.add_argument("--detect_anomaly", action="store_true", default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=list(range(0, 30_001, 1_000)))
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=list(range(0, 30_001, 1_000)))
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
+    parser.add_argument("--test_interval", type=int, default=2000)
+    parser.add_argument("--save_interval", type=int, default=2000)
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--checkpoint_interval", type=int, default=2000)
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[30_000])
-    parser.add_argument("-c", "--checkpoint", type=str, default=None)
+    parser.add_argument("-c", "--checkpoint", dest="checkpoint", type=str, default=None)
     # parser.add_argument("-t", "--type", choices=["3dgs", "neilf"], default="3dgs")
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)

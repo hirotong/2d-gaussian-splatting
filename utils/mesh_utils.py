@@ -20,7 +20,7 @@ import trimesh
 from tqdm import tqdm
 
 from scene.gaussian_model import GaussianModel
-from utils.image_utils import apply_depth_colormap, linear2srgb, srgb2linear
+from utils.image_utils import apply_depth_colormap, linear2srgb, srgb2linear, hdr2ldr
 from utils.render_utils import save_img_f32, save_img_u8
 from scripts.eval_dtu.eval import write_vis_pcd
 
@@ -89,7 +89,10 @@ class GaussianExtractor(object):
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
         self.gaussians = gaussians
         self.pipe = pipe
-        self.render = partial(render, pipe=pipe, bg_color=background, debug=True)
+        pbr_params = {}
+        if pipe.brdf:
+            pbr_params["sample_num"] = pipe.sample_num
+        self.render = partial(render, pipe=pipe, bg_color=background, dict_params=pbr_params, debug=True)
         self.clean()
 
     @torch.no_grad()
@@ -120,22 +123,23 @@ class GaussianExtractor(object):
         for i, viewpoint_cam in tqdm(enumerate(self.viewpoint_stack), desc="reconstruct radiance fields"):
             render_pkg = self.render(viewpoint_cam, self.gaussians)
             gt = viewpoint_cam.original_image[0:3, :, :]
-            if self.pipe.linear:
-                gt = linear2srgb(gt)
+            if render_pkg["hdr"]:
+                gt = hdr2ldr(gt)
             self.images["gt"].append(gt.cpu())
             if i == 0:
                 for k in render_pkg.keys():
+                    if not isinstance(render_pkg[k], torch.Tensor):
+                        continue
                     if render_pkg[k].ndim < 3:
                         continue
                     self.images[k] = []
             for k in render_pkg.keys():
+                if not isinstance(render_pkg[k], torch.Tensor):
+                    continue
                 if render_pkg[k].ndim < 3:
                     continue
-                if k in ["render", "albedo", "diffuse_color", "specular_color"]:
-                    if self.pipe.linear:
-                        self.images[k].append(linear2srgb(render_pkg[k]).cpu())
-                    else:
-                        self.images[k].append(render_pkg[k].cpu())
+                elif k in ["delta_normal_norm", "rend_dist"]:
+                    self.images[k].append(render_pkg[k].cpu())
                 elif "normal" in k:
                     img_k = torch.nn.functional.normalize(render_pkg[k], dim=0)
                     self.images[k].append(img_k.cpu())
@@ -357,6 +361,9 @@ class GaussianExtractor(object):
                     save_img_u8(img_k, os.path.join(path, "renders", "{0:05d}".format(idx) + ".png"))
                 elif k == "surf_depth":
                     img_k = apply_depth_colormap(-self.images[k][idx].permute(1, 2, 0))
+                    save_img_u8(img_k.cpu().numpy(), os.path.join(path, k, "{0:05d}".format(idx) + ".png"))
+                elif k == "delta_normal_norm":
+                    img_k = apply_depth_colormap(self.images[k][idx].permute(1, 2, 0))
                     save_img_u8(img_k.cpu().numpy(), os.path.join(path, k, "{0:05d}".format(idx) + ".png"))
                 elif "normal" in k:
                     img_k = self.images[k][idx].permute(1, 2, 0).cpu().numpy() * 0.5 + 0.5

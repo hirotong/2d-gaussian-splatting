@@ -56,7 +56,7 @@ def readImages(renders_dir, gt_dir):
     return renders, gts, image_names
 
 
-def evaluate(model_paths):
+def evaluate(model_paths, brdf=False):
     full_dict = {}
     per_view_dict = {}
     full_dict_polytopeonly = {}
@@ -83,7 +83,7 @@ def evaluate(model_paths):
 
             method_dir = test_dir / method
             gt_dir = method_dir / "gt"
-            renders_dir = method_dir / "renders"
+            renders_dir = method_dir / "renders" if not brdf else method_dir / "render_brdf"
             renders, gts, image_names = readImages(renders_dir, gt_dir)
 
             ssims = []
@@ -114,11 +114,16 @@ def evaluate(model_paths):
                     "LPIPS": {name: lp for lp, name in zip(torch.tensor(lpipss).tolist(), image_names)},
                 }
             )
-
-        with open(scene_dir + "/results.json", "w") as fp:
-            json.dump(full_dict[scene_dir], fp, indent=True)
-        with open(scene_dir + "/per_view.json", "w") as fp:
-            json.dump(per_view_dict[scene_dir], fp, indent=True)
+        if brdf:
+            with open(scene_dir + "/results_brdf.json", "w") as fp:
+                json.dump(full_dict[scene_dir], fp, indent=True)
+            with open(scene_dir + "/per_view_brdf.json", "w") as fp:
+                json.dump(per_view_dict[scene_dir], fp, indent=True)
+        else:
+            with open(scene_dir + "/results.json", "w") as fp:
+                json.dump(full_dict[scene_dir], fp, indent=True)
+            with open(scene_dir + "/per_view.json", "w") as fp:
+                json.dump(per_view_dict[scene_dir], fp, indent=True)
     # except:
     #     print("Unable to compute metrics for model", scene_dir)
 
@@ -181,6 +186,7 @@ if __name__ == "__main__":
     parser.add_argument("--skip_mesh", action="store_true")
     parser.add_argument("--skip_metric", action="store_true")
     parser.add_argument("--n_points", "-n", type=int, default=100_000)
+    parser.add_argument("--brdf", action="store_true")
     args = parser.parse_args()
 
     if not args.skip_metric:

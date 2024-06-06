@@ -1,16 +1,18 @@
+import os
+
 import torch
 import torch.nn as nn
+
 from arguments import OptimizationParams
 
 
 class LearningGammaTransform:
-
     def __init__(self, use_ldr_image):
         self.use_ldr_image = use_ldr_image
         self.gamma = nn.Parameter(torch.ones(1).float().cuda()).requires_grad_(True)
 
     def training_setup(self, training_args: OptimizationParams):
-        l = [{'name': 'gamma', 'params': self.gamma, 'lr': training_args.gamma_lr}]
+        l = [{"name": "gamma", "params": self.gamma, "lr": training_args.gamma_lr}]
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
 
     def step(self):
@@ -25,14 +27,12 @@ class LearningGammaTransform:
 
         return captured_list
 
-    def restore(self, model_args, training_args,
-                is_training=False, restore_optimizer=True):
+    def restore(self, model_args, training_args, is_training=False, restore_optimizer=True):
         pass
 
     def create_from_ckpt(self, checkpoint_path, restore_optimizer=False):
-        (model_args, first_iter) = torch.load(checkpoint_path)
-        (self.gamma,
-         opt_dict) = model_args[:2]
+        model_args = torch.load(checkpoint_path)
+        (self.gamma, opt_dict) = model_args[:2]
 
         if restore_optimizer:
             try:
@@ -40,12 +40,16 @@ class LearningGammaTransform:
             except:
                 print("Not loading optimizer state_dict!")
 
-        return first_iter
+        # return first_iter
+
+    def save_ckpt(self, model_path, iteration):
+        print("\n[ITER {}] Saving Gamma Transform Checkpoint".format(iteration))
+        torch.save((self.capture(), iteration), os.path.join(model_path, f"gamma_ckpt_{iteration}.pth"))
 
     def hdr2ldr(self, hdr_img):
         if self.use_ldr_image:
             hdr_img = hdr_img.clamp(1e-9, 1)
-            ldr_img = hdr_img ** self.gamma
+            ldr_img = hdr_img**self.gamma
             return ldr_img
         else:
             return hdr_img

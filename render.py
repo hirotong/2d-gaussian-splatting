@@ -19,10 +19,12 @@ import torchvision
 from tqdm import tqdm
 
 from arguments import ModelParams, PipelineParams, get_combined_args
-from gaussian_renderer import GaussianModel, render, render_lighting
+from gaussian_renderer import render_fn_dict
 from scene import Scene
+from scene.gaussian_model import GaussianModel
 from scene.NVDIFFREC.util import save_image_raw
 from utils.general_utils import safe_state
+from utils.image_utils import hdr2ldr
 from utils.mesh_utils import GaussianExtractor, post_process_mesh, to_cam_open3d
 from utils.render_utils import create_videos, generate_path
 
@@ -62,14 +64,15 @@ if __name__ == "__main__":
     print("Rendering " + args.model_path)
 
     dataset, iteration, pipe = model.extract(args), args.iteration, pipeline.extract(args)
-    gaussians = GaussianModel(dataset.sh_degree, dataset.brdf_dim, dataset.brdf_mode, dataset.brdf_envmap_res)
+    gaussians = GaussianModel(dataset.sh_degree, dataset.render_type)
     scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
     train_dir = os.path.join(args.model_path, "train", "ours_{}".format(scene.loaded_iter))
     test_dir = os.path.join(args.model_path, "test", "ours_{}".format(scene.loaded_iter))
-    gaussExtractor = GaussianExtractor(gaussians, render, pipe, bg_color=bg_color)
+    render_fn = render_fn_dict[dataset.render_type]
+    gaussExtractor = GaussianExtractor(gaussians, render_fn, pipe, bg_color=bg_color)
 
     if not args.skip_train:
         print("export training images ...")

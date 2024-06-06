@@ -9,7 +9,10 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
+import os
+
 import cv2
+import imageio.v2 as imageio
 import numpy as np
 import torch
 from matplotlib import cm
@@ -68,3 +71,31 @@ def linear2srgb(img):
     else:
         img = torch.where(img <= 0.0031308, 12.92 * img, 1.055 * (img ** (1.0 / 2.4)) - 0.055)
     return img
+
+
+def hdr2ldr(img, scale=0.666667):
+    img = img * scale
+    # img = 1 - np.exp(-3.0543 * img)  # Filmic
+    img = (img * (2.51 * img + 0.03)) / (img * (2.43 * img + 0.59) + 0.14)  # ACES
+    return img
+
+
+def save_image(fn, x: np.ndarray):
+    try:
+        if os.path.splitext(fn)[1] == ".png":
+            imageio.imwrite(
+                fn,
+                np.clip(np.rint(x * 255.0), 0, 255).astype(np.uint8),
+                compress_level=3,
+            )  # Low compression for faster saving
+        else:
+            imageio.imwrite(fn, np.clip(np.rint(x * 255.0), 0, 255).astype(np.uint8))
+    except:
+        print("WARNING: FAILED to save image %s" % fn)
+
+
+def save_image_raw(fn, x: np.ndarray):
+    try:
+        imageio.imwrite(fn, x)
+    except:
+        print("WARNING: FAILED to save image %s" % fn)
