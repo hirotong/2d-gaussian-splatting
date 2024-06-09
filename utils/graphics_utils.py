@@ -163,3 +163,17 @@ def get_rays(width, height, intrinsic, camrot):
     pixelcoords = torch.stack((px, py), dim=-1).cuda()  # H x W x 2
     raydir = get_dtu_raydir(pixelcoords, intrinsic, camrot, dir_norm=True)
     return raydir
+
+
+def translate(x, y, z, device=None):
+    return torch.tensor([[1, 0, 0, x], [0, 1, 0, y], [0, 0, 1, z], [0, 0, 0, 1]], dtype=torch.float32, device=device)
+
+
+def rotate_x(a, device=None):
+    s, c = np.sin(a), np.cos(a)
+    return torch.tensor([[1, 0, 0, 0], [0, c, -s, 0], [0, s, c, 0], [0, 0, 0, 1]], dtype=torch.float32, device=device)
+
+
+def rotate_y(a, device=None):
+    s, c = np.sin(a), np.cos(a)
+    return torch.tensor([[c, 0, s, 0], [0, 1, 0, 0], [-s, 0, c, 0], [0, 0, 0, 1]], dtype=torch.float32, device=device)

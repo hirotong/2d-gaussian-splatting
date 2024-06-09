@@ -44,10 +44,11 @@ for f_name in f_names:
     mesh_results_path = os.path.join(f_name, "results_mesh.json")
     if not os.path.exists(mesh_results_path):
         mesh_metric_dict = DEFAULT_MESH_DICT
-    with open(mesh_results_path) as json_file:
-        mesh_metric_dict = json.load(json_file)[method]
-    for key, value in mesh_metric_dict.items():
-        summary[key] = summary.get(key, []) + [value]
+    else:
+        with open(mesh_results_path) as json_file:
+            mesh_metric_dict = json.load(json_file)[method]
+        for key, value in mesh_metric_dict.items():
+            summary[key] = summary.get(key, []) + [value]
 
 summary["Method"].append("Avg.")
 summary["PSNR"].append(np.mean(summary["PSNR"]))

@@ -13,6 +13,8 @@ import json
 import os
 import random
 
+import torch
+
 from arguments import ModelParams
 from scene.dataset_readers import sceneLoadTypeCallbacks
 from scene.gaussian_model import GaussianModel
@@ -93,6 +95,10 @@ class Scene:
             if self.gaussians.brdf:
                 fn = os.path.join(self.model_path, "brdf_mlp", "iteration_" + str(self.loaded_iter), "brdf_mlp.hdr")
                 self.gaussians.brdf_mlp = load_env(fn, scale=1.0)
+                mtx = torch.tensor(
+                    [[1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0], [0, 0, 0, 1]], dtype=torch.float, device="cuda"
+                )[None]  # coordiante transformation from blender to opengl cubemap
+                self.gaussians.brdf_mlp.xfm(mtx)
                 print(f"Load envmap from: {fn}")
         else:
             self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent)

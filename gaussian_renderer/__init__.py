@@ -164,14 +164,9 @@ def render(
             color_delta = None
             delta_normal_norm = None
             if pipe.brdf_mode == "envmap":
-                # transform from blender world (z up) to opengl world (y up)
-                transform_matrix = torch.tensor([[0, 1, 0], [0, 0, 1], [1, 0, 0]]).float().cuda()
                 gb_pos = pc.get_xyz  # (N, 3)
                 view_pos = viewpoint_camera.camera_center.repeat(pc.get_opacity.shape[0], 1)  # (N, 3)
                 normal, delta_normal = pc.get_normal(dir_pp_normalized=dir_pp_normalized, return_delta=True)  # (N, 3)
-                gb_pos = gb_pos @ transform_matrix.T
-                view_pos = view_pos @ transform_matrix.T
-                normal = normal @ transform_matrix.T
                 delta_normal_norm = delta_normal.norm(dim=1, keepdim=True)
 
                 diffuse = pc.get_diffuse.squeeze(1)  # (N, 3)

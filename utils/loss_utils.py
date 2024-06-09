@@ -217,7 +217,7 @@ def point_laplacian_loss(all_points, n_samples=10000, num_neighbors=12):
         all_points: (M, 3)
         num_neighbors: _description_. Defaults to 12.
     """
-    all_points.retain_grad()
+    # all_points.retain_grad()
     N = all_points.shape[0]
     n_samples = min(n_samples, N)
     sample_idx = torch.randint(0, N, (n_samples,))
@@ -248,11 +248,13 @@ def point_laplacian_loss(all_points, n_samples=10000, num_neighbors=12):
 
 
 if __name__ == "__main__":
-    all_points = torch.rand(100000, 3, requires_grad=True).cuda()
-    all_points.retain_grad()
-    # loss = torch.sum(all_points + 0.)
+    all_points = torch.rand(100000, 3, requires_grad=True, device='cuda')
+    # all_points.retain_grad()
+    # all_points = all_points + 0.
     loss = point_laplacian_loss(all_points)
+    # import torch.nn as nn
+    # loss = nn.L1Loss()(all_points.mean() , torch.tensor([100]).cuda())
     loss.backward()
-    print(all_points.grad.max())
+    print(all_points.grad)
     
     # print(sample_points.grad)

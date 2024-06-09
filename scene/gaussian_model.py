@@ -106,6 +106,10 @@ class GaussianModel:
 
         if self.brdf:
             self.brdf_mlp = create_trainable_env_rnd(self.brdf_envmap_res, scale=0.0, bias=0.8)
+            mtx = torch.tensor(
+                [[1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0], [0, 0, 0, 1]], dtype=torch.float, device="cuda"
+            )[None]  # coordiante transformation from blender to opengl cubemap
+            self.brdf_mlp.xfm(mtx)
         else:
             self.brdf_mlp = None
 
