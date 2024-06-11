@@ -15,6 +15,7 @@ from typing import NamedTuple
 import numpy as np
 import torch
 import torch.nn.functional as F
+from utils.plot_utils import vis_samples_3D
 
 
 class BasicPointCloud(NamedTuple):
@@ -165,6 +166,7 @@ def get_rays(width, height, intrinsic, camrot):
     raydir = get_dtu_raydir(pixelcoords, intrinsic, camrot, dir_norm=True)
     return raydir
 
+
 def rotation_between_z(vec):
     """
     https://math.stackexchange.com/questions/180418/calculate-rotation-matrix-to-align-vector-a-to-vector-b-in-3d/476311#476311
@@ -214,7 +216,7 @@ def fibonacci_sphere_sampling(normals, sample_num, random_rotate=True):
     if len(pre_shape) > 1:
         normals = normals.reshape(-1, 3)
     delta = np.pi * (3.0 - np.sqrt(5.0))
-    
+
     # fibonacci sphere sample around z axis
     idx = torch.arange(sample_num, dtype=torch.float, device="cuda")[None]
     z = 1 - 2 * idx / (2 * sample_num - 1)
@@ -225,7 +227,7 @@ def fibonacci_sphere_sampling(normals, sample_num, random_rotate=True):
     y = torch.cos(theta) * rad
     x = torch.sin(theta) * rad
     z_samples = torch.stack([x, y, z.expand_as(y)], dim=-2)
-    
+
     # rotate to normal
     # z_vector = torch.zeros_like(normals)
     # z_vector[..., 2] = 1  # [H, W, 3]
@@ -239,3 +241,49 @@ def fibonacci_sphere_sampling(normals, sample_num, random_rotate=True):
         incident_areas = incident_areas.reshape(*pre_shape, sample_num, 1)
     return incident_dirs, incident_areas
 
+
+def fibonacci_spiral_samples_on_unit_hemisphere(nb_samples, mode=0, up=True):
+    n = 2 * nb_samples
+    rn = range(nb_samples, n) if up else range(nb_samples)
+
+    shift = 1.0 if mode == 0 else n * np.random.random()
+
+    ga = np.pi * (3.0 - np.sqrt(5.0))
+    offset = 1.0 / nb_samples
+
+    ss = np.empty((nb_samples, 3))
+    j = 0
+    for i in rn:
+        phi = ga * ((i + shift) % nb_samples)
+
+        cos_phi = np.cos(phi)
+        sin_phi = np.sin(phi)
+        cos_theta = (i + 0.5) * offset - 1.0
+        sin_theta = np.sqrt(1 - cos_theta * cos_theta)
+        ss[j, :] = np.array([cos_phi * sin_theta, sin_phi * sin_theta, cos_theta])
+        j += 1
+    return ss
+
+def fibonacci_spiral_samples_on_unit_sphere(nb_samples, mode=0):
+    shift = 1.0 if mode == 0 else nb_samples * np.random.random()
+    
+    ga = np.pi * (3.0 - np.sqrt(5.0))
+    offset = 2.0 / nb_samples
+    
+    indices = np.arange(nb_samples)
+    
+    phi = ga * (indices + shift) % nb_samples
+    cos_phi = np.cos(phi)
+    sin_phi = np.sin(phi)
+    cos_theta = (indices + 0.5) * offset - 1.0
+    sin_theta = np.sqrt(1 - cos_theta * cos_theta)
+    
+    ss = np.stack([cos_phi * sin_theta, sin_phi * sin_theta, cos_theta], axis=-1)
+    
+    return ss
+
+if __name__ == '__main__':
+
+    vis_samples_3D(fibonacci_spiral_samples_on_unit_hemisphere(256, mode=0, up=True), "1000_0_up.png")
+    vis_samples_3D(fibonacci_spiral_samples_on_unit_sphere(256 * 256, mode=0), "1000_0.png")
+    vis_samples_3D(fibonacci_spiral_samples_on_unit_sphere(256, mode=1), "1000_1.png")

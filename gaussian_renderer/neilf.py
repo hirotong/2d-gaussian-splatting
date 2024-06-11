@@ -6,6 +6,7 @@ from arguments import OptimizationParams, PipelineParams
 from bvh import RayTracer
 from scene.gaussian_model import GaussianModel
 from scene.direct_light_sh import DirectLightEnv
+from scene.gs_light import GaussianEnvLighting
 from scene.cameras import Camera
 from utils.sh_utils import eval_sh, eval_sh_coef
 from utils.loss_utils import (
@@ -644,9 +645,10 @@ def rendering_equation_python(
     viewdirs,
     incidents,
     is_training=False,
-    direct_light_env_light: DirectLightEnv = None,
+    direct_light_env_light=None,
     visibility=None,
     sample_num=24,
+    view_pos=None,
 ):
     incident_dirs, incident_areas = sample_incident_rays(normals, is_training, sample_num)
 
@@ -655,26 +657,21 @@ def rendering_equation_python(
     metallic = metallic.unsqueeze(-2).contiguous()
     normals = normals.unsqueeze(-2).contiguous()
     viewdirs = viewdirs.unsqueeze(-2).contiguous()
+    
+    view_pos = view_pos.unsqueeze(-2).contiguous() if view_pos is not None else None
 
     deg = int(np.sqrt(visibility.shape[1]) - 1)
     incident_dirs_coef = eval_sh_coef(deg, incident_dirs).unsqueeze(2)
     shs_view = incidents.transpose(1, 2).view(base_color.shape[0], 1, 3, -1)
     shs_visibility = visibility.transpose(1, 2).view(base_color.shape[0], 1, 1, -1)
     local_incident_lights = torch.clamp_min((incident_dirs_coef[..., : shs_view.shape[-1]] * shs_view).sum(-1), 0)
-    if direct_light_env_light is not None:
-        shs_rotations = build_rotation(direct_light_env_light.get_rotation).unsqueeze(0)  # (1, n_shs, 3, 3)
-
-        direct_incident_dirs_rotated = incident_dirs.unsqueeze(1) @ shs_rotations.transpose(
-            -1, -2
-        )  # (N, n_shs, n_samples, 3)
-        direct_incident_dirs_coef = eval_sh_coef(deg, direct_incident_dirs_rotated).unsqueeze(
-            -2
-        )  # (N, n_shs, n_samples, n_shs_coef)
-
-        shs_view_direct = direct_light_env_light.get_env_shs.transpose(1, 2).unsqueeze(0).unsqueeze(2) # (n_shs, 3, n_shs_coef)
+    if isinstance(direct_light_env_light, DirectLightEnv):
+        shs_view_direct = direct_light_env_light.get_env_shs.transpose(1, 2).unsqueeze(1)
         global_incident_lights = torch.clamp_min(
-            (direct_incident_dirs_coef[..., : shs_view_direct.shape[-1]] * shs_view_direct).sum(-1).mean(1) + 0.5, 0
+            (incident_dirs_coef[..., : shs_view_direct.shape[-1]] * shs_view_direct).sum(-1) + 0.5, 0
         )
+    elif isinstance(direct_light_env_light, GaussianEnvLighting):
+        global_incident_lights = direct_light_env_light.radiance(view_pos, incident_dirs)
     else:
         global_incident_lights = torch.zeros_like(local_incident_lights, requires_grad=False)
 

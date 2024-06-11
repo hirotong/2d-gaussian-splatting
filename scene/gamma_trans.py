@@ -9,7 +9,7 @@ from arguments import OptimizationParams
 class LearningGammaTransform:
     def __init__(self, use_ldr_image):
         self.use_ldr_image = use_ldr_image
-        self.gamma = nn.Parameter(torch.ones(1).float().cuda()).requires_grad_(True)
+        self.gamma = nn.Parameter(torch.ones(1).float().cuda() / 2.2).requires_grad_(True)
 
     def training_setup(self, training_args: OptimizationParams):
         l = [{"name": "gamma", "params": self.gamma, "lr": training_args.gamma_lr}]

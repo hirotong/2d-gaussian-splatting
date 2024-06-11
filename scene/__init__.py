@@ -21,6 +21,7 @@ from utils.lighting_utils import save_env_map
 from utils.camera_utils import camera_to_JSON, cameraList_from_camInfos
 from utils.system_utils import mkdir_p, searchForMaxIteration
 from scene.direct_light_sh import DirectLightEnv
+from scene.gs_light import GaussianEnvLighting
 from scene.gamma_trans import LearningGammaTransform
 
 class Scene:
@@ -105,6 +106,12 @@ class Scene:
                     direct_env_light.create_from_ckpt(fn)
                     self.gaussians.env_light = direct_env_light
                     print(f"Load shs from: {fn}")
+                elif args.env_light_type == "gaussian":
+                    fn = os.path.join(self.model_path, "env_light_ckpt_{}.pth".format(self.loaded_iter))
+                    gaussian_env_light = GaussianEnvLighting(args.num_global_shs, args.global_shs_degree)
+                    gaussian_env_light.create_from_ckpt(fn)
+                    self.gaussians.env_light = gaussian_env_light
+                    print(f"Load gaussian from: {fn}")
                 else:
                     raise NotImplementedError
                 

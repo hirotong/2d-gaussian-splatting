@@ -26,6 +26,7 @@ from bvh import RayTracer
 from gaussian_renderer import network_gui, render_fn_dict  # , render_lighting
 from scene import GaussianModel, Scene
 from scene.direct_light_sh import DirectLightEnv
+from scene.gs_light import GaussianEnvLighting
 from scene.gamma_trans import LearningGammaTransform
 from scene.NVDIFFREC.light import extract_env_map, create_trainable_env_rnd
 from utils.general_utils import safe_state
@@ -88,6 +89,21 @@ def training(
                 else:
                     print("Failed to load!")
 
+            gaussians.env_light = direct_env_light
+        elif dataset.env_light_type == "gaussian":
+            print("Using trainable gaussian environment light.")
+            assert dataset.global_shs_degree > 0, "Global SH degree must be greater than 0."
+            direct_env_light = GaussianEnvLighting(dataset.num_subdivisions, dataset.global_shs_degree)
+            direct_env_light.training_setup(opt)
+
+            if args.checkpoint:
+                env_checkpoint = os.path.dirname(args.checkpoint) + "/env_light_" + os.path.basename(args.checkpoint)
+                print("Trying to load global incident light from ", env_checkpoint)
+                if os.path.exists(env_checkpoint):
+                    direct_env_light.create_from_ckpt(env_checkpoint, restore_optimizer=True)
+                    print("Successfully loaded!")
+                else:
+                    print("Failed to load!")
             gaussians.env_light = direct_env_light
 
             # pbr_kwargs["env_light"] = direct_env_light

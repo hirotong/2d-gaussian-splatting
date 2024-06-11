@@ -69,6 +69,8 @@ class ModelParams(ParamGroup):
         ## global shs
         self.num_global_shs = 12
         self.global_shs_degree = 3
+        ##
+        self.num_subdivisions = 4
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
