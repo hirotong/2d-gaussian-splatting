@@ -14,6 +14,7 @@ import sys
 import uuid
 from argparse import ArgumentParser, Namespace
 from random import randint
+from copy import deepcopy
 
 import torch
 from tqdm import tqdm
@@ -53,11 +54,23 @@ def training(
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree, dataset.brdf_dim, dataset.brdf_mode, dataset.brdf_envmap_res)
+    bg_gaussians = None
+    if dataset.rotation:
+        bg_gaussians = GaussianModel(sh_degree=3, brdf_dim=-1, brdf_mode=None, brdf_envmap_res=None)
     scene = Scene(dataset, gaussians)
     gaussians.training_setup(opt)
+    if bg_gaussians:
+        bg_gaussians.training_setup(opt)
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
         gaussians.restore(model_params, opt)
+
+    bg_gaussians = None
+    if dataset.rotation:
+        bg_gaussians = GaussianModel(sh_degree=3, brdf_dim=-1, brdf_mode=None, brdf_envmap_res=None)
+        # initialize the background model
+        bg_gaussians.create_from_pcd(scene.scene_info.bg_point_cloud, scene.cameras_extent * 10)
+        bg_gaussians.training_setup(opt)
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
@@ -70,7 +83,6 @@ def training(
     ema_dist_for_log = 0.0
     ema_normal_for_log = 0.0
     ema_losses_for_log = {}
-
 
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
@@ -86,7 +98,8 @@ def training(
         # Pick a random Camera
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
-        viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack) - 1))
+        rand_idx = randint(0, len(viewpoint_stack) - 1)
+        viewpoint_cam = viewpoint_stack.pop(rand_idx)
 
         if pipe.brdf:
             gaussians.set_requires_grad("normal", state=iteration >= opt.normal_reg_from_iter)
@@ -97,6 +110,18 @@ def training(
             gaussians.set_requires_grad("xyz", state=iteration > opt.brdf_only_until_iter)
 
         # Render
+        if dataset.rotation:
+            bg_pipe = deepcopy(pipe)
+            bg_pipe.brdf = False
+
+            bg_viewpoint_cam = scene.getTrainBgCameras().copy().pop(rand_idx)
+            bg_render_pkg = render(bg_viewpoint_cam, bg_gaussians, bg_pipe, background, debug=False, speed=True)
+            bg_image, bg_viewspace_point_tensor, bg_visibility_filter, bg_radii = (
+                bg_render_pkg["render"],
+                bg_render_pkg["viewspace_points"],
+                bg_render_pkg["visibility_filter"],
+                bg_render_pkg["radii"],
+            )
         render_pkg = render(viewpoint_cam, gaussians, pipe, background, debug=False)
         image, viewspace_point_tensor, visibility_filter, radii = (
             render_pkg["render"],
@@ -104,6 +129,8 @@ def training(
             render_pkg["visibility_filter"],
             render_pkg["radii"],
         )
+        if dataset.rotation:
+            image = image * render_pkg["rend_alpha"] + bg_image * (1 - render_pkg["rend_alpha"])
         losses_extra = {}
         if pipe.brdf:
             if iteration >= opt.normal_reg_from_iter and iteration < opt.normal_reg_util_iter:
@@ -121,7 +148,7 @@ def training(
                 assert ()
             if "delta_normal_norm" in render_pkg.keys():
                 losses_extra["delta_reg"] = delta_normal_loss(render_pkg["delta_normal_norm"], render_pkg["rend_alpha"])
-        
+
         # point laplacian loss
         if gaussians.get_xyz.requires_grad:
             losses_extra["point_laplacian"] = point_laplacian_loss(gaussians.get_xyz)
@@ -149,7 +176,6 @@ def training(
         loss.backward()
 
         iter_end.record()
-        
 
         with torch.no_grad():
             # Progress bar
@@ -198,12 +224,17 @@ def training(
                 iter_start.elapsed_time(iter_end),
                 testing_iterations,
                 scene,
+                bg_gaussians,
                 render,
                 (pipe, background, 1.0, None, True, False),
             )
             if iteration in saving_iterations:
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
+
+                if bg_gaussians:
+                    point_cloud_path = os.path.join(scene.model_path, "point_cloud/iteration_{}".format(iteration))
+                    bg_gaussians.save_ply(os.path.join(point_cloud_path, "bg_point_cloud.ply"), brdf_params=False)
 
             # Densification
             if iteration > opt.brdf_only_until_iter and iteration < opt.densify_until_iter:
@@ -212,21 +243,38 @@ def training(
                 )
                 gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
 
+                if bg_gaussians:
+                    bg_gaussians.max_radii2D[bg_visibility_filter] = torch.max(
+                        bg_gaussians.max_radii2D[bg_visibility_filter], bg_radii[bg_visibility_filter]
+                    )
+                    bg_gaussians.add_densification_stats(bg_viewspace_point_tensor, bg_visibility_filter)
+
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
                     gaussians.densify_and_prune(
                         opt.densify_grad_threshold, opt.opacity_cull, scene.cameras_extent, size_threshold
                     )
 
+                    if bg_gaussians:
+                        bg_gaussians.densify_and_prune(
+                            opt.densify_grad_threshold, opt.opacity_cull, 10 * scene.cameras_extent, size_threshold
+                        )
+
                 if iteration % opt.opacity_reset_interval == 0 or (
                     dataset.white_background and iteration == opt.densify_from_iter
                 ):
                     gaussians.reset_opacity()
 
+                    if bg_gaussians:
+                        bg_gaussians.reset_opacity()
+
             # Optimizer step
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none=True)
+                if dataset.rotation:
+                    bg_gaussians.optimizer.step()
+                    bg_gaussians.optimizer.zero_grad(set_to_none=True)
 
             # clamp the environment map
             if pipe.brdf and pipe.brdf_mode == "envmap":
@@ -235,6 +283,10 @@ def training(
             if iteration in checkpoint_iterations:
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
+                if bg_gaussians:
+                    torch.save(
+                        (bg_gaussians.capture(), iteration), scene.model_path + "/bg_chkpnt" + str(iteration) + ".pth"
+                    )
 
 
 def prepare_output_and_logger(args):
@@ -271,6 +323,7 @@ def training_report(
     elapsed,
     testing_iterations,
     scene: Scene,
+    bg_gaussians,
     renderFunc,
     renderArgs,
 ):
@@ -287,13 +340,25 @@ def training_report(
     # Report test and samples of training set
     if iteration in testing_iterations:
         torch.cuda.empty_cache()
-        validation_configs = (
-            {"name": "test", "cameras": scene.getTestCameras()},
-            {
-                "name": "train",
-                "cameras": [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(5, 30, 5)],
-            },
-        )
+        if bg_gaussians:
+            validation_configs = (
+                {"name": "test", "cameras": scene.getTestCameras(), "bg_cameras": scene.getTestBgCameras()},
+                {
+                    "name": "train",
+                    "cameras": [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(5, 30, 5)],
+                    "bg_cameras": [
+                        scene.getTestBgCameras()[idx % len(scene.getTrainBgCameras())] for idx in range(5, 30, 5)
+                    ],
+                },
+            )
+        else:
+            validation_configs = (
+                {"name": "test", "cameras": scene.getTestCameras()},
+                {
+                    "name": "train",
+                    "cameras": [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(5, 30, 5)],
+                },
+            )
         if tb_writer:
             if pipe.brdf:
                 lighting = render_lighting(scene.gaussians, resolution=(512, 1024))
@@ -307,6 +372,18 @@ def training_report(
                     render_pkg = renderFunc(viewpoint, scene.gaussians, *renderArgs)
                     image = torch.clamp(render_pkg["render"], 0.0, 1.0)
                     gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
+
+                    if bg_gaussians:
+                        bg_viewpoint = config["bg_cameras"][idx]
+                        bg_pipe = deepcopy(renderArgs[0])
+                        bg_pipe.brdf = False
+                        bg_background = renderArgs[1]
+                        bg_renderArgs = (bg_pipe, bg_background, 1.0, None, False, True)
+                        bg_render_pkg = renderFunc(bg_viewpoint, bg_gaussians, *bg_renderArgs)
+                        bg_image = torch.clamp(bg_render_pkg["render"], 0.0, 1.0)
+
+                        image = image * render_pkg["rend_alpha"] + bg_image * (1 - render_pkg["rend_alpha"])
+
                     if pipe.linear:
                         image = linear2srgb(image)
                         gt_image = linear2srgb(gt_image)
@@ -327,6 +404,12 @@ def training_report(
                             image[None],
                             global_step=iteration,
                         )
+                        if bg_gaussians:
+                            tb_writer.add_images(
+                                config["name"] + "_view_{}/bg_render".format(viewpoint.image_name),
+                                bg_image[None],
+                                global_step=iteration,
+                            )
 
                         for k in render_pkg.keys():
                             if render_pkg[k].dim() < 3 or k in ["render", "surf_depth"]:
@@ -375,8 +458,10 @@ if __name__ == "__main__":
     parser.add_argument("--ip", type=str, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=6009)
     parser.add_argument("--detect_anomaly", action="store_true", default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=list(range(0, 30_001, 1_000)))
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=list(range(0, 30_001, 1_000)))
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
+    parser.add_argument("--test_invertal", type=int, default=1000)
+    parser.add_argument("--save_interval", type=int, default=1000)
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[30_000])
     parser.add_argument("--start_checkpoint", type=str, default=None)
@@ -395,8 +480,8 @@ if __name__ == "__main__":
         lp.extract(args),
         op.extract(args),
         pp.extract(args),
-        args.test_iterations,
-        args.save_iterations,
+        args.test_iterations[1:],
+        args.save_iterations[1:],
         args.checkpoint_iterations,
         args.start_checkpoint,
     )

@@ -55,6 +55,8 @@ class ModelParams(ParamGroup):
         self._images = "images"
         self._resolution = -1
         self._white_background = False
+        self.rotation = False
+        self.apply_mask = False
         self.linear = False
         self.data_device = "cuda"
         self.eval = False
