@@ -223,7 +223,7 @@ def render(
         rotations=rotations,
         cov3D_precomp=cov3D_precomp,
     )
-
+    out_extras = {}
     if not speed:
         render_extras = {}
         if debug:
@@ -248,7 +248,6 @@ def render(
                     }
                 )
 
-        out_extras = {}
         for k in render_extras.keys():
             if render_extras[k] is None:
                 continue

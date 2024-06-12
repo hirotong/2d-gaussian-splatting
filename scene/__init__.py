@@ -27,7 +27,7 @@ class Scene:
     gaussians: GaussianModel
 
     def __init__(
-        self, args: ModelParams, gaussians: GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0]
+        self, args: ModelParams, gaussians: GaussianModel, bg_gaussians: GaussianModel = None, load_iteration=None, shuffle=True, resolution_scales=[1.0]
     ):
         """b
         :param path: Path to colmap scene main folder.
@@ -35,6 +35,7 @@ class Scene:
         self.model_path = args.model_path
         self.loaded_iter = None
         self.gaussians = gaussians
+        self.args = args
 
         if load_iteration:
             if load_iteration == -1:
@@ -45,16 +46,26 @@ class Scene:
 
         self.train_cameras = {}
         self.test_cameras = {}
+        if args.rotation:
+            self.train_bg_cameras = {}
+            self.test_bg_cameras = {}
 
         if os.path.exists(os.path.join(args.source_path, "sparse")):
             scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.eval)
         elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):
             print("Found transforms_train.json file, assuming Blender data set!")
-            scene_info = sceneLoadTypeCallbacks["Blender"](
-                args.source_path, args.white_background, args.eval, linear=args.linear
-            )
+            if args.rotation:
+                scene_info = sceneLoadTypeCallbacks["RotBlender"](
+                    args.source_path, args.white_background, args.eval, linear=args.linear, apply_mask = args.apply_mask
+                )
+            else:
+                scene_info = sceneLoadTypeCallbacks["Blender"](
+                    args.source_path, args.white_background, args.eval, linear=args.linear
+                )
         else:
             assert False, "Could not recognize scene type!"
+        
+        self.scene_info = scene_info
 
         if not self.loaded_iter:
             with open(scene_info.ply_path, "rb") as src_file, open(
@@ -73,8 +84,18 @@ class Scene:
                 json.dump(json_cams, file)
 
         if shuffle:
-            random.shuffle(scene_info.train_cameras)  # Multi-res consistent random shuffling
-            random.shuffle(scene_info.test_cameras)  # Multi-res consistent random shuffling
+            if args.rotation:
+                combined_train_cameras = list(zip(scene_info.train_cameras, scene_info.train_bg_cameras))
+                combined_test_cameras = list(zip(scene_info.test_cameras, scene_info.test_bg_cameras))
+                random.shuffle(combined_train_cameras)
+                train_cameras_shuffled, train_bg_cameras_shuffled = zip(*combined_train_cameras)
+                scene_info._replace(train_cameras=list(train_cameras_shuffled), train_bg_cameras=list(train_bg_cameras_shuffled))
+                random.shuffle(combined_test_cameras)
+                test_cameras_shuffled, test_bg_cameras_shuffled = zip(*combined_test_cameras)
+                scene_info._replace(test_cameras=list(test_cameras_shuffled), test_bg_cameras=list(test_bg_cameras_shuffled))
+            else:
+                random.shuffle(scene_info.train_cameras)  # Multi-res consistent random shuffling
+                random.shuffle(scene_info.test_cameras)  # Multi-res consistent random shuffling
 
         self.cameras_extent = scene_info.nerf_normalization["radius"]
 
@@ -87,6 +108,13 @@ class Scene:
             self.test_cameras[resolution_scale] = cameraList_from_camInfos(
                 scene_info.test_cameras, resolution_scale, args
             )
+            if args.rotation:
+                self.train_bg_cameras[resolution_scale] = cameraList_from_camInfos(
+                    scene_info.train_bg_cameras, resolution_scale, args
+                )
+                self.test_bg_cameras[resolution_scale] = cameraList_from_camInfos(
+                    scene_info.test_bg_cameras, resolution_scale, args
+                )
 
         if self.loaded_iter:
             self.gaussians.load_ply(
@@ -117,3 +145,9 @@ class Scene:
 
     def getTestCameras(self, scale=1.0):
         return self.test_cameras[scale]
+
+    def getTrainBgCameras(self, scale=1.0):
+        return self.train_bg_cameras[scale] if self.args.rotation else None
+
+    def getTestBgCameras(self, scale=1.0):
+        return self.test_bg_cameras[scale] if self.args.rotation else None
