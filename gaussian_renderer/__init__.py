@@ -319,11 +319,12 @@ def render(
         render_normal_cam = rendered_world2cam(viewpoint_camera, render_normal, render_alpha[0], bg_color)
         surf_normal_cam = rendered_world2cam(viewpoint_camera, surf_normal, render_alpha[0], bg_color)
         normal_axis_cam = rendered_world2cam(viewpoint_camera, out_extras["normal_axis"], render_alpha[0], bg_color)
-        normal_view_cam = rendered_world2cam(viewpoint_camera, out_extras["normal_view"], render_alpha[0], bg_color)
         out_extras["render_normal_cam"] = render_normal_cam
         out_extras["surf_normal_cam"] = surf_normal_cam
         out_extras["normal_axis_cam"] = normal_axis_cam
-        out_extras["normal_view_cam"] = normal_view_cam
+        if pipe.brdf:
+            normal_view_cam = rendered_world2cam(viewpoint_camera, out_extras["normal_view"], render_alpha[0], bg_color)
+            out_extras["normal_view_cam"] = normal_view_cam
 
     out.update(
         {

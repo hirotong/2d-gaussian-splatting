@@ -368,7 +368,7 @@ def readCamerasFromRotTransforms(
             if linear:
                 norm_data = srgb2linear(norm_data)
             if apply_mask:
-                arr = norm_data[:, :, :3] * norm_data[:, :, 3:4] + bg * (1 - norm_data[:, :, 3:4])
+                arr = norm_data[:, :, :3] * (1 - norm_data[:, :, 3:4]) + bg * (norm_data[:, :, 3:4])
             else:
                 arr = norm_data[:, :, :3]
 
@@ -516,16 +516,16 @@ def readRotNerfSyntheticInfo(
         pcd = BasicPointCloud(points=xyz, colors=SH2RGB(shs), normals=np.zeros((num_pts, 3)))
 
         storePly(ply_path, xyz, SH2RGB(shs) * 255)
-    if not os.path.exists(bg_ply_path):
+    # if not os.path.exists(bg_ply_path):
+    if True:
         # Since this data set has no colmap data, we start with random points
         num_pts = 10_000
         print(f"Generating random background point cloud ({num_pts})...")
 
         # We create random points inside the bounds of the synthetic Blender scenes
         radius = nerf_normalization["radius"]
-        xyz = np.random.random((num_pts, 3)) * 10 * radius - 5 * radius
-        mask = (xyz > radius * 1.2).all(axis=-1)[:, None]
-        xyz = xyz[mask]
+        xyz = np.random.random((num_pts, 3)) * 2 - 1
+        xyz = xyz / np.linalg.norm(xyz, axis=1, keepdims=True) * radius
         shs = np.random.random((xyz.shape[0], 3)) / 255.0
         pcd = BasicPointCloud(points=xyz, colors=SH2RGB(shs), normals=np.zeros((num_pts, 3)))
 

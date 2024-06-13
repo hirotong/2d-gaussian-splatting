@@ -35,6 +35,7 @@ class Scene:
         self.model_path = args.model_path
         self.loaded_iter = None
         self.gaussians = gaussians
+        self.bg_gaussians = bg_gaussians
         self.args = args
 
         if load_iteration:
@@ -133,9 +134,9 @@ class Scene:
 
     def save(self, iteration):
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
-        self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"), brdf_params=True)
         self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud_gs.ply"), brdf_params=False)
         if self.gaussians.brdf:
+            self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"), brdf_params=True)
             brdf_mlp_path = os.path.join(self.model_path, f"brdf_mlp/iteration_{iteration}/brdf_mlp.hdr")
             mkdir_p(os.path.dirname(brdf_mlp_path))
             save_env_map(brdf_mlp_path, self.gaussians.brdf_mlp)

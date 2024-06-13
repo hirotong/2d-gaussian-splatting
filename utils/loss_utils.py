@@ -219,7 +219,7 @@ def point_laplacian_loss(all_points, n_samples=10000, num_neighbors=12):
     """
     # all_points.retain_grad()
     N = all_points.shape[0]
-    n_samples = min(n_samples, N)
+    n_samples = min(n_samples, N-1)
     sample_idx = torch.randint(0, N, (n_samples,))
     sample_points = all_points[sample_idx]
     sample_points = sample_points.unsqueeze(0)
