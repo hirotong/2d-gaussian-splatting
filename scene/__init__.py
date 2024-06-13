@@ -27,7 +27,13 @@ class Scene:
     gaussians: GaussianModel
 
     def __init__(
-        self, args: ModelParams, gaussians: GaussianModel, bg_gaussians: GaussianModel = None, load_iteration=None, shuffle=True, resolution_scales=[1.0]
+        self,
+        args: ModelParams,
+        gaussians: GaussianModel,
+        bg_gaussians: GaussianModel = None,
+        load_iteration=None,
+        shuffle=True,
+        resolution_scales=[1.0],
     ):
         """b
         :param path: Path to colmap scene main folder.
@@ -56,15 +62,18 @@ class Scene:
             print("Found transforms_train.json file, assuming Blender data set!")
             if args.rotation:
                 scene_info = sceneLoadTypeCallbacks["RotBlender"](
-                    args.source_path, args.white_background, args.eval, linear=args.linear, apply_mask = args.apply_mask
+                    args.source_path, args.white_background, args.eval, linear=args.linear, apply_mask=args.apply_mask
                 )
             else:
                 scene_info = sceneLoadTypeCallbacks["Blender"](
                     args.source_path, args.white_background, args.eval, linear=args.linear
                 )
+        elif os.path.exists(os.path.join(args._source_path, "eval_pts.ply")):
+            print("Found eval_pts.ply file, assuming glossy synthetic data set!")
+            scene_info = sceneLoadTypeCallbacks["GlossySynthetic"](args.source_path, args.white_background)
         else:
             assert False, "Could not recognize scene type!"
-        
+
         self.scene_info = scene_info
 
         if not self.loaded_iter:
@@ -89,10 +98,14 @@ class Scene:
                 combined_test_cameras = list(zip(scene_info.test_cameras, scene_info.test_bg_cameras))
                 random.shuffle(combined_train_cameras)
                 train_cameras_shuffled, train_bg_cameras_shuffled = zip(*combined_train_cameras)
-                scene_info._replace(train_cameras=list(train_cameras_shuffled), train_bg_cameras=list(train_bg_cameras_shuffled))
+                scene_info._replace(
+                    train_cameras=list(train_cameras_shuffled), train_bg_cameras=list(train_bg_cameras_shuffled)
+                )
                 random.shuffle(combined_test_cameras)
                 test_cameras_shuffled, test_bg_cameras_shuffled = zip(*combined_test_cameras)
-                scene_info._replace(test_cameras=list(test_cameras_shuffled), test_bg_cameras=list(test_bg_cameras_shuffled))
+                scene_info._replace(
+                    test_cameras=list(test_cameras_shuffled), test_bg_cameras=list(test_bg_cameras_shuffled)
+                )
             else:
                 random.shuffle(scene_info.train_cameras)  # Multi-res consistent random shuffling
                 random.shuffle(scene_info.test_cameras)  # Multi-res consistent random shuffling

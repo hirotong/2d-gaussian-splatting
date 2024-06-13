@@ -18,6 +18,7 @@ from typing import NamedTuple
 import numpy as np
 from PIL import Image
 from plyfile import PlyData, PlyElement
+import glob
 
 from scene.colmap_loader import (
     qvec2rotmat,
@@ -32,7 +33,7 @@ from scene.gaussian_model import BasicPointCloud
 from utils.graphics_utils import focal2fov, fov2focal, getWorld2View2
 from utils.image_utils import linear2srgb, srgb2linear
 from utils.sh_utils import SH2RGB
-
+from utils.dataset_utils import read_pickle
 
 class CameraInfo(NamedTuple):
     uid: int
@@ -549,9 +550,112 @@ def readRotNerfSyntheticInfo(
     )
     return scene_info
 
+def readCamerasFromGlossySynthetic(path, white_background, scale_factor=1.0):
+    """
+    For NERO datset, the camera model is the same as colmap.
+    The pkl file consist of intrinsics and extrinsics.
+    """
+    
+    cam_infos = []
+    
+    model_name = Path(path).stem
+    img_num = len(glob.glob(f"{path}/*.pkl"))
+    
+    for i in range(img_num):
+        
+        cam = read_pickle(os.path.join(path, f"{id}-camera.pkl"))
+        w2c = cam[0].copy().astype(np.float32)
+        
+        R = np.transpose(w2c[:3, :3])   # R is stored transposed due to 'glm' in CUDA code
+        T = w2c[:, 3]
+        
+        image_path = os.path.join(path, f"{i}.png")
+        image_name = Path(image_path).stem
+        image = Image.open(image_path)
+        
+        im_data = np.array(image)
+        norm_data = im_data / 255.0
+        
+        depth_path = os.path.join(path, f"{i}-depth.png")
+        depth = Image.open(depth_path)
+        depth = np.array(depth, dtype=np.float32) / 65535 * 15  # [0, 15]
+        
+        alpha_mask = (depth < 14.5).astype(np.float32)
+        
+        bg = np.array([1, 1, 1]) if white_background else np.array([0, 0, 0])
+        
+        arr = norm_data * alpha_mask[:, :, None] + (1 - alpha_mask[:, :, None]) * bg
+        
+        image = Image.fromarray(np.array(arr * 255.0, dtype=np.byte), "RGB")
+        alpha_mask = Image.fromarray(np.array(alpha_mask * 255.0, dtype=np.byte), "L")
+    
+        K = cam[1].copy().astype(np.float32)
+    
+        focal_length = (K[0, 0] + K[1, 1]) / 2
+        FovX = focal2fov(focal_length, image.size[0])
+        FovY = focal2fov(focal_length, image.size[1])
+
+        cam_infos.append(
+            CameraInfo(
+                uid=i,
+                R=R,
+                T=T,
+                FovY=FovY,
+                FovX=FovX,
+                image=image,
+                image_path=image_path,
+                image_name=image_name,
+                width=image.size[0],
+                height=image.size[1],
+                normal_image=None,
+                alpha_mask=alpha_mask,
+            )
+        )   
+    
+    return cam_infos            
+    
+
+def readGlossySyntheticInfo(path, white_background, eval, extension=".png"):
+    
+    print("Reading Glossy Synthetic data.")
+    train_cam_infos = readCamerasFromGlossySynthetic(path, white_background)
+    
+    test_cam_infos = []
+    
+    nerf_normalization = getNerfppNorm(train_cam_infos)
+    
+    ply_path = os.path.join(path, "points3d.ply")
+
+    if not os.path.exists(ply_path):
+        # Since this data set has no colmap data, we start with random points
+        num_pts = 100_000
+        print(f"Generating random point cloud ({num_pts})...")
+
+        # We create random points inside the bounds of the synthetic Blender scenes
+        # TODO: We may need to change the radius according to the NERO dataset.
+        xyz = np.random.random((num_pts, 3)) * 2.6 - 1.3    
+        shs = np.random.random((num_pts, 3)) / 255.0
+        pcd = BasicPointCloud(points=xyz, colors=SH2RGB(shs), normals=np.zeros((num_pts, 3)))
+
+        storePly(ply_path, xyz, SH2RGB(shs) * 255)
+    try:
+        pcd = fetchPly(ply_path)
+    except:
+        pcd = None
+
+    scene_info = SceneInfo(
+        point_cloud=pcd,
+        train_cameras=train_cam_infos,
+        test_cameras=test_cam_infos,
+        nerf_normalization=nerf_normalization,
+        ply_path=ply_path,
+    )
+    
+    return scene_info
 
 sceneLoadTypeCallbacks = {
     "Colmap": readColmapSceneInfo,
     "Blender": readNerfSyntheticInfo,
     "RotBlender": readRotNerfSyntheticInfo,
+    "GlossySynthetic": readGlossySyntheticInfo,
 }
