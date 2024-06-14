@@ -106,7 +106,8 @@ if __name__ == "__main__":
         else:
             name = "fuse.ply"
             depth_trunc = (gaussExtractor.radius * 2.0) if args.depth_trunc < 0 else args.depth_trunc
-            voxel_size = (depth_trunc / args.mesh_res) if args.voxel_size < 0 else args.voxel_size
+            # voxel_size = (depth_trunc / args.mesh_res) if args.voxel_size < 0 else args.voxel_size
+            voxel_size = (2.6 / args.mesh_res) if args.voxel_size < 0 else args.voxel_size
             sdf_trunc = 5.0 * voxel_size if args.sdf_trunc < 0 else args.sdf_trunc
             mesh = gaussExtractor.extract_mesh_bounded(
                 voxel_size=voxel_size, sdf_trunc=sdf_trunc, depth_trunc=depth_trunc

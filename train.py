@@ -458,7 +458,7 @@ if __name__ == "__main__":
     parser.add_argument("--detect_anomaly", action="store_true", default=False)
     parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
-    parser.add_argument("--test_invertal", type=int, default=1000)
+    parser.add_argument("--test_interval", type=int, default=1000)
     parser.add_argument("--save_interval", type=int, default=1000)
     parser.add_argument("--checkpoint_interval", type=int, default=1_000)
     parser.add_argument("--quiet", action="store_true")

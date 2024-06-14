@@ -563,7 +563,7 @@ def readCamerasFromGlossySynthetic(path, white_background, scale_factor=1.0):
     
     for i in range(img_num):
         
-        cam = read_pickle(os.path.join(path, f"{id}-camera.pkl"))
+        cam = read_pickle(os.path.join(path, f"{i}-camera.pkl"))
         w2c = cam[0].copy().astype(np.float32)
         
         R = np.transpose(w2c[:3, :3])   # R is stored transposed due to 'glm' in CUDA code
@@ -584,7 +584,7 @@ def readCamerasFromGlossySynthetic(path, white_background, scale_factor=1.0):
         
         bg = np.array([1, 1, 1]) if white_background else np.array([0, 0, 0])
         
-        arr = norm_data * alpha_mask[:, :, None] + (1 - alpha_mask[:, :, None]) * bg
+        arr = norm_data[:, :, :3] * alpha_mask[:, :, None] + (1 - alpha_mask[:, :, None]) * bg
         
         image = Image.fromarray(np.array(arr * 255.0, dtype=np.byte), "RGB")
         alpha_mask = Image.fromarray(np.array(alpha_mask * 255.0, dtype=np.byte), "L")

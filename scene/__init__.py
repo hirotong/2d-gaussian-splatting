@@ -42,6 +42,7 @@ class Scene:
         self.loaded_iter = None
         self.gaussians = gaussians
         self.args = args
+        self.datatype = None
 
         if load_iteration:
             if load_iteration == -1:
@@ -57,20 +58,24 @@ class Scene:
             self.test_bg_cameras = {}
 
         if os.path.exists(os.path.join(args.source_path, "sparse")):
+            self.datatype = "colmap"
             scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.eval)
         elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):
             print("Found transforms_train.json file, assuming Blender data set!")
             if args.rotation:
+                self.datatype = "rotblender"
                 scene_info = sceneLoadTypeCallbacks["RotBlender"](
                     args.source_path, args.white_background, args.eval, linear=args.linear, apply_mask=args.apply_mask
                 )
             else:
+                self.datatype = "blender"
                 scene_info = sceneLoadTypeCallbacks["Blender"](
                     args.source_path, args.white_background, args.eval, linear=args.linear
                 )
-        elif os.path.exists(os.path.join(args._source_path, "eval_pts.ply")):
+        elif os.path.exists(os.path.join(args.source_path, "eval_pts.ply")):
+            self.datatype = "glossy_synthetic"
             print("Found eval_pts.ply file, assuming glossy synthetic data set!")
-            scene_info = sceneLoadTypeCallbacks["GlossySynthetic"](args.source_path, args.white_background)
+            scene_info = sceneLoadTypeCallbacks["GlossySynthetic"](args.source_path, args.white_background, args.eval)
         else:
             assert False, "Could not recognize scene type!"
 
@@ -136,13 +141,15 @@ class Scene:
             if self.gaussians.brdf:
                 fn = os.path.join(self.model_path, "brdf_mlp", "iteration_" + str(self.loaded_iter), "brdf_mlp.hdr")
                 self.gaussians.brdf_mlp = load_env(fn, scale=1.0)
-                mtx = torch.tensor(
-                    [[1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0], [0, 0, 0, 1]], dtype=torch.float, device="cuda"
-                )[None]  # coordiante transformation from blender to opengl cubemap
-                self.gaussians.brdf_mlp.xfm(mtx)
                 print(f"Load envmap from: {fn}")
         else:
             self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent)
+
+        if self.datatype == "blender":
+            mtx = torch.tensor(
+                [[1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0], [0, 0, 0, 1]], dtype=torch.float, device="cuda"
+            )[None]  # coordiante transformation from blender to opengl cubemap
+            self.gaussians.brdf_mlp.xfm(mtx)
 
     def save(self, iteration):
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
