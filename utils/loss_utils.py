@@ -91,6 +91,13 @@ def zero_one_loss(img):
     return loss
 
 
+def mask_entropy_loss(mask, gt):
+    zero_epsilon = 1e-6
+    mask = torch.clamp(mask, zero_epsilon, 1 - zero_epsilon)
+    loss = -torch.mean(gt * torch.log(mask) + (1 - gt) * torch.log(1 - mask))
+    return loss
+
+
 def predicted_normal_loss(normal, normal_ref, alpha=None):
     """Computes the predicted normal supervision loss defined in ref-NeRF."""
     # normal: (3, H, W), normal_ref: (3, H, W), alpha: (3, H, W)
@@ -219,11 +226,11 @@ def point_laplacian_loss(all_points, n_samples=10000, num_neighbors=12):
     """
     # all_points.retain_grad()
     N = all_points.shape[0]
-    n_samples = min(n_samples, N-1)
+    n_samples = min(n_samples, N - 1)
     sample_idx = torch.randint(0, N, (n_samples,))
     sample_points = all_points[sample_idx]
     sample_points = sample_points.unsqueeze(0)
-    all_points = all_points.unsqueeze(0)        # .detach()
+    all_points = all_points.unsqueeze(0)  # .detach()
 
     # Find the nearest neighbors
     dist, idx, nn = knn_points(sample_points, all_points, K=num_neighbors + 1, return_nn=True)
@@ -248,7 +255,7 @@ def point_laplacian_loss(all_points, n_samples=10000, num_neighbors=12):
 
 
 if __name__ == "__main__":
-    all_points = torch.rand(100000, 3, requires_grad=True, device='cuda')
+    all_points = torch.rand(100000, 3, requires_grad=True, device="cuda")
     # all_points.retain_grad()
     # all_points = all_points + 0.
     loss = point_laplacian_loss(all_points)
@@ -256,5 +263,5 @@ if __name__ == "__main__":
     # loss = nn.L1Loss()(all_points.mean() , torch.tensor([100]).cuda())
     loss.backward()
     print(all_points.grad)
-    
+
     # print(sample_points.grad)

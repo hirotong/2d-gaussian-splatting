@@ -118,3 +118,8 @@ if __name__ == "__main__":
         mesh_post = post_process_mesh(mesh, cluster_to_keep=args.num_cluster)
         o3d.io.write_triangle_mesh(os.path.join(train_dir, name.replace(".ply", "_post.ply")), mesh_post)
         print("mesh post processed saved at {}".format(os.path.join(train_dir, name.replace(".ply", "_post.ply"))))
+        
+        sampled_pcd = mesh_post.sample_points_poisson_disk(number_of_points=100000)
+        o3d.io.write_point_cloud(os.path.join(train_dir, "pred_points.ply"), sampled_pcd)
+
+        

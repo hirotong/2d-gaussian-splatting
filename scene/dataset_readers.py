@@ -332,7 +332,7 @@ def readCamerasFromRotTransforms(
         frames = contents["frames"]
         for idx, frame in enumerate(frames):
             cam_name = os.path.join(path, frame["file_path"] + extension)
-
+            
             # matrix = np.linalg.inv(np.array(frame["transform_matrix"]))
             # R = -np.transpose(matrix[:3,:3])
             # R[:,0] = -R[:,0]
@@ -368,7 +368,7 @@ def readCamerasFromRotTransforms(
             if linear:
                 norm_data = srgb2linear(norm_data)
             if apply_mask:
-                arr = norm_data[:, :, :3] * (1 - norm_data[:, :, 3:4]) + bg * (norm_data[:, :, 3:4])
+                arr = norm_data[:, :, :3] * norm_data[:, :, 3:4] + bg * (1 - norm_data[:, :, 3:4])
             else:
                 arr = norm_data[:, :, :3]
 
@@ -516,8 +516,8 @@ def readRotNerfSyntheticInfo(
         pcd = BasicPointCloud(points=xyz, colors=SH2RGB(shs), normals=np.zeros((num_pts, 3)))
 
         storePly(ply_path, xyz, SH2RGB(shs) * 255)
-    # if not os.path.exists(bg_ply_path):
-    if True:
+    if not os.path.exists(bg_ply_path):
+    # if True:
         # Since this data set has no colmap data, we start with random points
         num_pts = 10_000
         print(f"Generating random background point cloud ({num_pts})...")

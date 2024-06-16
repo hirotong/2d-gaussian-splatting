@@ -32,6 +32,7 @@ from utils.loss_utils import (
     ssim,
     zero_one_loss,
     point_laplacian_loss,
+    mask_entropy_loss,
 )
 
 try:
@@ -77,6 +78,7 @@ def training(
     iter_end = torch.cuda.Event(enable_timing=True)
 
     viewpoint_stack = None
+    bg_viewpoint_stack = None
     ema_loss_for_log = 0.0
     ema_dist_for_log = 0.0
     ema_normal_for_log = 0.0
@@ -111,8 +113,9 @@ def training(
         if dataset.rotation:
             bg_pipe = deepcopy(pipe)
             bg_pipe.brdf = False
-
-            bg_viewpoint_cam = scene.getTrainBgCameras().copy().pop(rand_idx)
+            if not bg_viewpoint_stack:
+                bg_viewpoint_stack = scene.getTrainBgCameras().copy()
+            bg_viewpoint_cam = bg_viewpoint_stack.pop(rand_idx)
             bg_render_pkg = render(bg_viewpoint_cam, bg_gaussians, bg_pipe, background, debug=False, speed=True)
             bg_image, bg_viewspace_point_tensor, bg_visibility_filter, bg_radii = (
                 bg_render_pkg["render"],
@@ -130,6 +133,9 @@ def training(
         if dataset.rotation:
             image = image * render_pkg["rend_alpha"] + bg_image * (1 - render_pkg["rend_alpha"])
         losses_extra = {}
+        image_mask = viewpoint_cam.gt_alpha_mask.cuda() if viewpoint_cam.gt_alpha_mask is not None else None
+        if opt.lambda_mask_entropy > 0 and image_mask is not None:
+            losses_extra["mask_entropy"] = mask_entropy_loss(render_pkg["rend_alpha"], image_mask)
         if pipe.brdf:
             if iteration >= opt.normal_reg_from_iter and iteration < opt.normal_reg_util_iter:
                 losses_extra["predicted_normal"] = predicted_normal_loss(
@@ -148,13 +154,20 @@ def training(
                 losses_extra["delta_reg"] = delta_normal_loss(render_pkg["delta_normal_norm"], render_pkg["rend_alpha"])
 
         # point laplacian loss
-        if gaussians.get_xyz.requires_grad:
-            losses_extra["point_laplacian"] = point_laplacian_loss(gaussians.get_xyz)
+        # if gaussians.get_xyz.requires_grad:
+        #     losses_extra["point_laplacian"] = point_laplacian_loss(gaussians.get_xyz)
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+
+        # if dataset.rotation:
+        #     bg_gt_image = gt_image * (1 - image_mask)
+        #     bg_image = bg_image * (1 - image_mask)
+        #     Ll1_bg = l1_loss(bg_image, bg_gt_image)
+        #     loss += (1.0 - opt.lambda_dssim) * Ll1_bg + opt.lambda_dssim * (1.0 - ssim(bg_image, bg_gt_image))
+
         for k in losses_extra.keys():
             loss += getattr(opt, f"lambda_{k}") * losses_extra[k]
         # # regularization
@@ -182,7 +195,7 @@ def training(
             for k in losses_extra.keys():
                 ema_losses_for_log[k] = 0.4 * losses_extra[k].item() + 0.6 * ema_losses_for_log.get(k, 0.0)
 
-            ema_dist_for_log = 0.4 * losses_extra["dist"].item() + 0.6 * ema_dist_for_log
+            # ema_dist_for_log = 0.4 * losses_extra["dist"].item() + 0.6 * ema_dist_for_log
             # ema_normal_for_log = 0.4 * normal_loss.item() + 0.6 * ema_normal_for_log
             # ema_normal_for_log = 0.4 * losses_extra["predicted_normal"] + 0.6 * ema_normal_for_log
 

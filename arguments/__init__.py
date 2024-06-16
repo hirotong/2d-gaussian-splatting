@@ -142,6 +142,9 @@ class OptimizationParams(ParamGroup):
         self.fix_brdf_lr = 0
 
         self.brdf_only_until_iter = 0
+        
+        # loss weights
+        self.lambda_mask_entropy = 0.1
 
         super().__init__(parser, "Optimization Parameters")
 

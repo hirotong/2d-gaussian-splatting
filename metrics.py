@@ -140,13 +140,18 @@ def evaluate_mesh(model_paths, n_points, visualize_pcd=True):
             print("Method:", method)
             method_dir = train_dir / method
 
-            mesh_pred = trimesh.load_mesh(method_dir / "fuse_post.ply", process=False)
-            o3d_pcd = o3d.io.read_point_cloud((source_path / "points_gt.ply").as_posix())
+            # mesh_pred = trimesh.load_mesh(method_dir / "fuse_post.ply", process=False)
+            pcd_eval = o3d.io.read_point_cloud((method_dir / "eval_points.ply").as_posix())
+            pcd_gt = o3d.io.read_point_cloud((source_path / "points_gt.ply").as_posix())
 
-            pointcloud_tgt = np.asarray(o3d_pcd.points)
+            pointcloud_pred = np.asarray(pcd_eval.points)
+            pointcloud_tgt = np.asarray(pcd_gt.points)
 
-            mesh_eval_dict, pred2gt_pcd, gt2pred_pcd = mesh_evaluator.eval_mesh(
-                mesh_pred, pointcloud_tgt, None, visualize_pcd=visualize_pcd
+            # mesh_eval_dict, pred2gt_pcd, gt2pred_pcd = mesh_evaluator.eval_mesh(
+            #     mesh_pred, pointcloud_tgt, None, visualize_pcd=visualize_pcd
+            # )
+            mesh_eval_dict, pred2gt_pcd, gt2pred_pcd = mesh_evaluator.eval_pointcloud(
+                pointcloud_pred, pointcloud_tgt, None, visualize_pcd=visualize_pcd
             )
 
             if visualize_pcd:
