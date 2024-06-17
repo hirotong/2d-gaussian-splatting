@@ -79,6 +79,13 @@ def _ssim(img1, img2, window, window_size, channel, size_average=True):
         return ssim_map.mean(1).mean(1).mean(1)
 
 
+def zero_one_loss(img):
+    zero_epsilon = 1e-3
+    val = torch.clamp(img, zero_epsilon, 1 - zero_epsilon)
+    loss = torch.mean(torch.log(val) + torch.log(1 - val))
+    return loss
+
+
 def mask_entropy_loss(mask, gt):
     zero_epsilon = 1e-6
     mask = torch.clamp(mask, zero_epsilon, 1 - zero_epsilon)

@@ -287,7 +287,7 @@ def readCamerasFromRotTransforms(path, transformsfile, white_background, extensi
         frames = contents["frames"]
         for idx, frame in enumerate(frames):
             cam_name = os.path.join(path, frame["file_path"] + extension)
-
+            
             # matrix = np.linalg.inv(np.array(frame["transform_matrix"]))
             # R = -np.transpose(matrix[:3,:3])
             # R[:,0] = -R[:,0]

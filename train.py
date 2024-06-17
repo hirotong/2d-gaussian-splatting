@@ -50,6 +50,7 @@ def training(
     iter_end = torch.cuda.Event(enable_timing=True)
 
     viewpoint_stack = None
+    bg_viewpoint_stack = None
     ema_loss_for_log = 0.0
     ema_dist_for_log = 0.0
     ema_normal_for_log = 0.0

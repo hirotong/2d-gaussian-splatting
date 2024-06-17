@@ -69,6 +69,36 @@ def to_cam_open3d(viewpoint_stack):
 
     return camera_traj
 
+def tsdf_integration(viewpoints, rgbs, depths, voxel_size=0.004, sdf_trunc=0.02, depth_trunc=3, mask_background=True):
+    print("Running tsdf volume integration ...")
+    print(f"voxel_size: {voxel_size}")
+    print(f"sdf_trunc: {sdf_trunc}")
+    print(f"depth_truc: {depth_trunc}")
+    
+    volume = o3d.pipelines.integration.ScalableTSDFVolume(
+        voxel_length=voxel_size, sdf_trunc=sdf_trunc, color_type=o3d.pipelines.integration.TSDFVolumeColorType.RGB8
+    )
+
+    for i, cam_o3d in tqdm(enumerate(to_cam_open3d(viewpoints)), desc="TSDF integration progress"):
+        rgb = rgbs[i]
+        depth = depths[i]
+        
+        if mask_background and (viewpoints[i].gt_alpha_mask is not None):
+            depth[(viewpoints[i].gt_alpha_mask < 0.5)] = 0
+        
+        rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
+            o3d.geometry.Image(np.asarray(rgb.permute(1, 2, 0).cpu().numpy() * 255, order="C", dtype=np.uint8)),
+            o3d.geometry.Image(np.asarray(depth.permute(1, 2, 0).cpu().numpy(), order="C")),
+            depth_trunc=depth_trunc,
+            convert_rgb_to_intensity=False,
+            depth_scale=1.0,
+        )
+        
+        volume.integrate(rgbd, intrinsic=cam_o3d.intrinsic, extrinsic=cam_o3d.extrinsic)
+    
+    mesh = volume.extract_triangle_mesh()
+    return mesh
+        
 
 class GaussianExtractor(object):
     def __init__(self, gaussians, render, pipe, bg_color=None):
