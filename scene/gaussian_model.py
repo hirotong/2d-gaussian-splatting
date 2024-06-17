@@ -428,7 +428,9 @@ class GaussianModel:
         new_opacity = self._opacity[selected_pts_mask].repeat(N, 1)
         new_confidence = self._confidence[selected_pts_mask].repeat(N, 1)
 
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation, new_confidence)
+        self.densification_postfix(
+            new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation, new_confidence
+        )
 
         prune_filter = torch.cat(
             (selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool))

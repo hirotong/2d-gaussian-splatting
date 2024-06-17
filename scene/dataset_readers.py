@@ -273,7 +273,7 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
     return cam_infos
 
 
-def readCamerasFromRotTransforms(path, transformsfile, white_background, extension=".png"):
+def readCamerasFromRotTransforms(path, transformsfile, white_background, extension=".png", apply_mask=False):
     cam_infos = []
     bg_cam_infos = []
 
@@ -298,7 +298,7 @@ def readCamerasFromRotTransforms(path, transformsfile, white_background, extensi
             o2w = np.array(frame["object"])
             # change from OpenGL/Blender camera axes (Y up, Z back) to COLMAP (Y down, Z forward)
             c2w[:3, 1:3] *= -1
-            o2w[:3, 1:3] *= -1
+            # o2w[:3, 1:3] *= -1
 
             # get the world-to-camera transform and set R, T
             # w2c = np.linalg.inv(c2w)
@@ -319,7 +319,11 @@ def readCamerasFromRotTransforms(path, transformsfile, white_background, extensi
             bg = np.array([1, 1, 1]) if white_background else np.array([0, 0, 0])
 
             norm_data = im_data / 255.0
-            arr = norm_data[:, :, :3]
+            if apply_mask:
+                arr = norm_data[:, :, :3] * norm_data[:, :, 3:4] + bg * (1 - norm_data[:, :, 3:4])
+            else:
+                arr = norm_data[:, :, :3]
+
 
             image = Image.fromarray(np.array(arr * 255.0, dtype=np.byte), "RGB")
             alpha_mask = norm_data[:, :, 3]

@@ -322,7 +322,7 @@ def training_report(
                             )
                             tb_writer.add_images(
                                 config["name"] + "_view_{}/mask".format(viewpoint.image_name),
-                                viewpoint.gt_alpha_mask[None],
+                                viewpoint.gt_alpha_mask[None].detach(),
                                 global_step=iteration,
                             )
 
@@ -349,6 +349,7 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=6009)
     parser.add_argument("--detect_anomaly", action="store_true", default=False)
     parser.add_argument("--test_interval", type=int, default=1000)
+    parser.add_argument("--save_interval", type=int, default=1000)
     parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
     parser.add_argument("--quiet", action="store_true")
@@ -369,8 +370,8 @@ if __name__ == "__main__":
         lp.extract(args),
         op.extract(args),
         pp.extract(args),
-        args.test_iterations + list(range(0, args.iterations, args.test_interval)),
-        args.save_iterations,
+        sorted(args.test_iterations + list(range(args.test_interval, args.iterations, args.test_interval))),
+        sorted(args.save_iterations + list(range(args.save_interval, args.iterations, args.save_interval))),
         args.checkpoint_iterations,
         args.start_checkpoint,
     )

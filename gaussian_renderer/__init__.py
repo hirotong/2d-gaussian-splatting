@@ -17,8 +17,11 @@ from diff_surfel_rasterization import GaussianRasterizationSettings, GaussianRas
 
 from scene.cameras import Camera
 from scene.gaussian_model import GaussianModel
+from utils.gaussian_utils import GaussianTransformUtils
+from utils.general_utils import build_rotation
 from utils.point_utils import depth_to_normal
 from utils.sh_utils import eval_sh
+from scene.colmap_loader import rotmat2qvec
 
 
 def render(
@@ -64,19 +67,6 @@ def render(
     opacity = pc.get_opacity
     confidence = pc.get_confidence
 
-    delta_xyz = means3D @ torch.from_numpy(viewpoint_camera.obj_R - np.eye(3)).float().cuda() + torch.from_numpy(
-        viewpoint_camera.obj_T
-    ).float().cuda().unsqueeze(0)
-
-    means3D = (
-        means3D
-        + (
-            means3D @ torch.from_numpy(viewpoint_camera.obj_R - np.eye(3)).float().cuda()
-            + torch.from_numpy(viewpoint_camera.obj_T).float().cuda().unsqueeze(0)
-        )
-        * confidence
-    )
-
     # If precomputed 3d covariance is provided, use it. If not, then it will be computed from
     # scaling / rotation by the rasterizer.
     scales = None
@@ -119,6 +109,23 @@ def render(
             shs = pc.get_features
     else:
         colors_precomp = override_color
+
+    # Apply transformations
+    trans = GaussianTransformUtils()
+    confidence_mask = (confidence > 0.8).squeeze(-1)
+
+    rotation_matrix = torch.from_numpy(viewpoint_camera.obj_R).float().cuda()
+    translation = torch.from_numpy(viewpoint_camera.obj_T).float().cuda()
+
+    new_shs = trans.transform_shs(shs, rotation_matrix)
+    new_means3D, new_rotations = trans.rotate_by_matrix(means3D, rotations, rotation_matrix)
+
+    means3D = (new_means3D - means3D - trans.transform_xyz(translation.unsqueeze(0), rotation_matrix)) * confidence + means3D
+    shs[confidence_mask] = new_shs[confidence_mask]
+    rotations[confidence_mask] = new_rotations[confidence_mask]
+    # means3D = trans.transform_xyz(means3D, rotation_matrix) - trans.transform_xyz(translation, rotation_matrix)
+    # shs = trans.transform_shs(shs, rotation_matrix)
+    # rotations = trans.transform_rotation(rotations, rotation_matrix)
 
     rendered_image, radii, allmap = rasterizer(
         means3D=means3D,
