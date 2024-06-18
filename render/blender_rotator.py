@@ -88,10 +88,11 @@ cam_constraint.up_axis = "UP_Y"
 # virtual_cam_constraint.up_axis = "UP_Y"
 
 # setup lighting
+
 bpy.ops.object.light_add(type="POINT")
-light2 = bpy.data.lights["Point.001"]
-light2.shadow_soft_size = 0.0
-light2_object = scene.objects["Point.001"]
+# light2 = bpy.data.lights["Point.001"]
+# light2.shadow_soft_size = 0.0
+# light2_object = scene.objects["Point.001"]
 # light2_constraint = light2_object.constraints.new(type="TRACK_TO")
 # light2_constraint.track_axis = "TRACK_NEGATIVE_Z"
 # light2_constraint.up_axis = "UP_Y"
@@ -174,7 +175,7 @@ normal_file_output.format.file_format = "PNG"
 convert_node = nodes.new(type="CompositorNodeConvertColorSpace")
 # convert_node.use_transform = True
 convert_node.from_color_space = "sRGB"
-convert_node.to_color_space = "Linear"
+convert_node.to_color_space = "Linear Rec.709"
 
 links.new(bias_node.outputs[0], convert_node.inputs[0])
 links.new(convert_node.outputs[0], normal_file_output.inputs[0])
@@ -283,8 +284,8 @@ def set_camera_location(elevation, azimuth, distance):
     return camera
 
 
-def randomize_lighting() -> None:
-    light2.energy = 500 # random.uniform(200, 500)
+def randomize_lighting(energy=500) -> None:
+    light2.energy = energy  # random.uniform(200, 500)
     azim = camera_azimth + 5 * 2 * (random.random() - 0.5)
     elev = camera_elevs[0] + 5 * 2 * (random.random() - 0.5)
     radius = camera_dist + 0.5 * 2 * (random.random() - 0.5)
@@ -514,7 +515,7 @@ def render_envmap(path):
 
     # set camera properties
     hdr_cam_data.type = "PANO"
-    hdr_cam_data.cycles.panorama_type = "EQUIRECTANGULAR"
+    hdr_cam_data.panorama_type = "EQUIRECTANGULAR"
 
     bpy.context.collection.objects.link(hdr_cam_obj)
 
@@ -535,7 +536,7 @@ def render_envmap(path):
     # hide the target_object
 
     bpy.ops.render.render(write_still=True)
-    
+
     depth_file_output.mute = False
     normal_file_output.mute = False
     mask_file_output.mute = False
@@ -553,10 +554,10 @@ def save_images(object_file: str) -> None:
     target_object = bpy.context.scene.objects["Sketchfab_model"]
     normalize_scene(target_object)
     # target_object.location = (0, 0, 0)
-    if object_uid in ["sony", "pigeon"]:
-        subdivide_object(target_object, 2)
-    elif object_uid in ["pine_cone"]:
-        subdivide_object(target_object, 1)
+    # if object_uid in ["sony", "pigeon"]:
+    #     subdivide_object(target_object, 2)
+    # elif object_uid in ["pine_cone"]:
+    #     subdivide_object(target_object, 1)
 
     target_object.pass_index = 1
     for obj in target_object.children_recursive:
@@ -576,11 +577,11 @@ def save_images(object_file: str) -> None:
     obj_empty.parent = target_object
     obj_empty.matrix_parent_inverse = target_object.matrix_world.inverted()
 
-    randomize_lighting()
+    # randomize_lighting(0)
 
-    print(light2_object.matrix_world.translation)
+    # print(light2_object.matrix_world.translation)
 
-    out_data["lighting"] = {"location": list(light2_object.matrix_world.translation), "energy": light2.energy}
+    # out_data["lighting"] = {"location": list(light2_object.matrix_world.translation), "energy": light2.energy}
     out_data["frames"] = []
 
     stepsize = 360 / (args.num_images // N_elevs)
@@ -639,7 +640,7 @@ def save_images(object_file: str) -> None:
     hide_object(target_object)
 
     render_envmap(os.path.join(args.output_dir, object_uid))
-    
+
     show_object(target_object)
 
     # for debugging the workflow
@@ -651,25 +652,15 @@ def save_images(object_file: str) -> None:
             obj.select_set(True)
     # export obj mesh of the target object as ground truth
     export_options = {
-        "use_selection": True,  # Only export selected objects
-        "use_animation": False,  # Do not export animations
-        "use_mesh_modifiers": True,  # Apply modifiers (if any)
-        "use_edges": True,  # Include edges
-        "use_smooth_groups": False,  # Do not use smooth groups
-        "use_smooth_groups_bitflags": False,  # Do not use smooth groups bitflags
-        "use_normals": True,  # Include normals
-        "use_uvs": True,  # Include UVs
-        "use_materials": True,  # Export materials
-        "use_triangles": True,  # Do not triangulate faces
-        "use_nurbs": False,  # Do not convert NURBS to meshes
-        "use_vertex_groups": False,  # Do not export vertex groups
-        "path_mode": "AUTO",  # Use relative paths for any associated files
-        "axis_forward": "Y",  # Forward is along the Y axis
-        "axis_up": "Z",  # Up is along the Z axis
+        "export_selected_objects": True,  # Only export selected objects
+        "forward_axis": "Y",  # Forward is along the Y axis
+        "up_axis": "Z",  # Up is along the Z axis
+        "export_triangulated_mesh": True,  # Triangulate mesh
     }
-    bpy.ops.export_scene.obj(
+    bpy.ops.wm.obj_export(
         filepath=os.path.join(os.path.join(args.output_dir), object_uid, "mesh_gt.obj"), **export_options
     )
+
 
 def show_object(obj):
     obj.hide_render = False
@@ -677,6 +668,7 @@ def show_object(obj):
     for child in obj.children_recursive:
         child.hide_render = False
         child.hide_viewport = False
+
 
 def hide_object(obj):
     obj.hide_render = True
