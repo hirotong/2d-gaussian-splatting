@@ -180,7 +180,9 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
 
     reading_dir = "images" if images == None else images
     cam_infos_unsorted = readColmapCameras(
-        cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, images_folder=os.path.join(path, reading_dir)
+        cam_extrinsics=cam_extrinsics,
+        cam_intrinsics=cam_intrinsics,
+        images_folder=os.path.join(path, reading_dir),
     )
     cam_infos = sorted(cam_infos_unsorted.copy(), key=lambda x: x.image_name)
 
@@ -197,7 +199,9 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
     bin_path = os.path.join(path, "sparse/0/points3D.bin")
     txt_path = os.path.join(path, "sparse/0/points3D.txt")
     if not os.path.exists(ply_path):
-        print("Converting point3d.bin to .ply, will happen only the first time you open the scene.")
+        print(
+            "Converting point3d.bin to .ply, will happen only the first time you open the scene."
+        )
         try:
             xyz, rgb, _ = read_points3D_binary(bin_path)
         except:
@@ -236,7 +240,9 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
 
             # get the world-to-camera transform and set R, T
             w2c = np.linalg.inv(c2w)
-            R = np.transpose(w2c[:3, :3])  # R is stored transposed due to 'glm' in CUDA code
+            R = np.transpose(
+                w2c[:3, :3]
+            )  # R is stored transposed due to 'glm' in CUDA code
             T = w2c[:3, 3]
 
             image_path = os.path.join(path, cam_name)
@@ -248,7 +254,9 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             bg = np.array([1, 1, 1]) if white_background else np.array([0, 0, 0])
 
             norm_data = im_data / 255.0
-            arr = norm_data[:, :, :3] * norm_data[:, :, 3:4] + bg * (1 - norm_data[:, :, 3:4])
+            arr = norm_data[:, :, :3] * norm_data[:, :, 3:4] + bg * (
+                1 - norm_data[:, :, 3:4]
+            )
             image = Image.fromarray(np.array(arr * 255.0, dtype=np.byte), "RGB")
 
             fovy = focal2fov(fov2focal(fovx, image.size[0]), image.size[1])
@@ -273,7 +281,9 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
     return cam_infos
 
 
-def readCamerasFromRotTransforms(path, transformsfile, white_background, extension=".png", apply_mask=False):
+def readCamerasFromRotTransforms(
+    path, transformsfile, white_background, extension=".png", apply_mask=False
+):
     cam_infos = []
     bg_cam_infos = []
 
@@ -287,7 +297,7 @@ def readCamerasFromRotTransforms(path, transformsfile, white_background, extensi
         frames = contents["frames"]
         for idx, frame in enumerate(frames):
             cam_name = os.path.join(path, frame["file_path"] + extension)
-            
+
             # matrix = np.linalg.inv(np.array(frame["transform_matrix"]))
             # R = -np.transpose(matrix[:3,:3])
             # R[:,0] = -R[:,0]
@@ -304,7 +314,9 @@ def readCamerasFromRotTransforms(path, transformsfile, white_background, extensi
             # w2c = np.linalg.inv(c2w)
             w2c = np.linalg.inv(c2w)
             w2o = np.linalg.inv(o2w)
-            R = np.transpose(w2c[:3, :3])  # R is stored transposed due to 'glm' in CUDA code
+            R = np.transpose(
+                w2c[:3, :3]
+            )  # R is stored transposed due to 'glm' in CUDA code
             T = w2c[:3, 3]
 
             obj_R = np.transpose(w2o[:3, :3])
@@ -320,18 +332,23 @@ def readCamerasFromRotTransforms(path, transformsfile, white_background, extensi
 
             norm_data = im_data / 255.0
             if apply_mask:
-                arr = norm_data[:, :, :3] * norm_data[:, :, 3:4] + bg * (1 - norm_data[:, :, 3:4])
+                arr = norm_data[:, :, :3] * norm_data[:, :, 3:4] + bg * (
+                    1 - norm_data[:, :, 3:4]
+                )
             else:
                 arr = norm_data[:, :, :3]
 
-
             image = Image.fromarray(np.array(arr * 255.0, dtype=np.byte), "RGB")
             alpha_mask = norm_data[:, :, 3]
-            alpha_mask = Image.fromarray(np.array(alpha_mask * 255.0, dtype=np.byte), "L")
+            alpha_mask = Image.fromarray(
+                np.array(alpha_mask * 255.0, dtype=np.byte), "L"
+            )
             # arr = np.concatenate([arr, norm_data[:, :, 3:4]], axis=-1)
             # image = Image.fromarray(np.array(arr*255.0, dtype=np.byte), "RGBA")
 
-            normal_cam_name = os.path.join(path, frame["file_path"] + "_normal" + extension)
+            normal_cam_name = os.path.join(
+                path, frame["file_path"] + "_normal" + extension
+            )
             normal_image_path = os.path.join(path, normal_cam_name)
             if os.path.exists(normal_image_path):
                 normal_image = Image.open(normal_image_path)
@@ -339,11 +356,13 @@ def readCamerasFromRotTransforms(path, transformsfile, white_background, extensi
                 normal_im_data = np.array(normal_image.convert("RGBA"))
                 normal_bg_mask = (normal_im_data == 128).sum(-1) == 3
                 normal_norm_data = normal_im_data / 255.0
-                normal_arr = normal_norm_data[:, :, :3] * normal_norm_data[:, :, 3:4] + bg * (
-                    1 - normal_norm_data[:, :, 3:4]
-                )
+                normal_arr = normal_norm_data[:, :, :3] * normal_norm_data[
+                    :, :, 3:4
+                ] + bg * (1 - normal_norm_data[:, :, 3:4])
                 normal_arr[normal_bg_mask] = 0
-                normal_image = Image.fromarray(np.array(normal_arr * 255.0, dtype=np.byte), "RGB")
+                normal_image = Image.fromarray(
+                    np.array(normal_arr * 255.0, dtype=np.byte), "RGB"
+                )
             else:
                 normal_image = None
 
@@ -380,9 +399,13 @@ def readCamerasFromRotTransforms(path, transformsfile, white_background, extensi
 
 def readNerfSyntheticInfo(path, white_background, eval, extension=".png", linear=False):
     print("Reading Training Transforms")
-    train_cam_infos = readCamerasFromTransforms(path, "transforms_train.json", white_background, extension)
+    train_cam_infos = readCamerasFromTransforms(
+        path, "transforms_train.json", white_background, extension
+    )
     print("Reading Test Transforms")
-    test_cam_infos = readCamerasFromTransforms(path, "transforms_test.json", white_background, extension)
+    test_cam_infos = readCamerasFromTransforms(
+        path, "transforms_test.json", white_background, extension
+    )
 
     if not eval:
         train_cam_infos.extend(test_cam_infos)
@@ -399,7 +422,9 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png", linear
         # We create random points inside the bounds of the synthetic Blender scenes
         xyz = np.random.random((num_pts, 3)) * 2.6 - 1.3
         shs = np.random.random((num_pts, 3)) / 255.0
-        pcd = BasicPointCloud(points=xyz, colors=SH2RGB(shs), normals=np.zeros((num_pts, 3)))
+        pcd = BasicPointCloud(
+            points=xyz, colors=SH2RGB(shs), normals=np.zeros((num_pts, 3))
+        )
 
         storePly(ply_path, xyz, SH2RGB(shs) * 255)
     try:
@@ -421,9 +446,13 @@ def readRotNerfSyntheticInfo(
     path, white_background, eval, extension=".png", linear=False, apply_mask=False
 ) -> SceneInfo:
     print("Reading Training Transforms")
-    train_cam_infos = readCamerasFromRotTransforms(path, "transforms_train.json", white_background, extension)
+    train_cam_infos = readCamerasFromRotTransforms(
+        path, "transforms_train.json", white_background, extension
+    )
     print("Reading Test Transforms")
-    test_cam_infos = readCamerasFromRotTransforms(path, "transforms_test.json", white_background, extension)
+    test_cam_infos = readCamerasFromRotTransforms(
+        path, "transforms_test.json", white_background, extension
+    )
 
     if not eval:
         train_cam_infos.extend(test_cam_infos)
@@ -434,15 +463,27 @@ def readRotNerfSyntheticInfo(
     ply_path = os.path.join(path, "points3d.ply")
     # ply_path = os.path.join(path, "visual_hull_points.ply")
 
-    if not os.path.exists(ply_path):
+    # if not os.path.exists(ply_path):
+    if True:
         # Since this data set has no colmap data, we start with random points
         num_pts = 100_000
         print(f"Generating random point cloud ({num_pts})...")
 
         # We create random points inside the bounds of the synthetic Blender scenes
-        xyz = np.random.random((num_pts, 3)) * 2.6 - 1.3
+        radius = 1.3
+        xyz = np.random.random((num_pts, 3)) * 2 * radius - radius
         shs = np.random.random((num_pts, 3)) / 255.0
-        pcd = BasicPointCloud(points=xyz, colors=SH2RGB(shs), normals=np.zeros((num_pts, 3)))
+        # Initialize points outside the bound
+        xyz_bg = np.random.random((num_pts // 2, 3)) * 2 - 1
+        shs_bg = np.random.random((num_pts // 2, 3)) / 255.0
+        xyz_bg = xyz_bg / np.linalg.norm(xyz_bg, axis=-1, keepdims=True) * 4 * radius
+
+        xyz = np.concatenate([xyz, xyz_bg], axis=0)
+        shs = np.concatenate([shs, shs_bg], axis=0)
+
+        pcd = BasicPointCloud(
+            points=xyz, colors=SH2RGB(shs), normals=np.zeros((xyz.shape[0], 3))
+        )
 
         storePly(ply_path, xyz, SH2RGB(shs) * 255)
     try:

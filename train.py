@@ -176,36 +176,36 @@ def training(
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
 
-        with torch.no_grad():
-            if network_gui.conn == None:
-                network_gui.try_connect(dataset.render_items)
-            while network_gui.conn != None:
-                try:
-                    net_image_bytes = None
-                    custom_cam, do_training, keep_alive, scaling_modifer, render_mode = network_gui.receive()
-                    if custom_cam != None:
-                        render_pkg = render(custom_cam, gaussians, pipe, background, scaling_modifer)
-                        net_image = render_net_image(render_pkg, dataset.render_items, render_mode, custom_cam)
-                        net_image_bytes = memoryview(
-                            (torch.clamp(net_image, min=0, max=1.0) * 255)
-                            .byte()
-                            .permute(1, 2, 0)
-                            .contiguous()
-                            .cpu()
-                            .numpy()
-                        )
-                    metrics_dict = {
-                        "#": gaussians.get_opacity.shape[0],
-                        "loss": ema_loss_for_log,
-                        # Add more metrics as needed
-                    }
-                    # Send the data
-                    network_gui.send(net_image_bytes, dataset.source_path, metrics_dict)
-                    if do_training and ((iteration < int(opt.iterations)) or not keep_alive):
-                        break
-                except Exception as e:
-                    # raise e
-                    network_gui.conn = None
+        # with torch.no_grad():
+        #     if network_gui.conn == None:
+        #         network_gui.try_connect(dataset.render_items)
+        #     while network_gui.conn != None:
+        #         try:
+        #             net_image_bytes = None
+        #             custom_cam, do_training, keep_alive, scaling_modifer, render_mode = network_gui.receive()
+        #             if custom_cam != None:
+        #                 render_pkg = render(custom_cam, gaussians, pipe, background, scaling_modifer)
+        #                 net_image = render_net_image(render_pkg, dataset.render_items, render_mode, custom_cam)
+        #                 net_image_bytes = memoryview(
+        #                     (torch.clamp(net_image, min=0, max=1.0) * 255)
+        #                     .byte()
+        #                     .permute(1, 2, 0)
+        #                     .contiguous()
+        #                     .cpu()
+        #                     .numpy()
+        #                 )
+        #             metrics_dict = {
+        #                 "#": gaussians.get_opacity.shape[0],
+        #                 "loss": ema_loss_for_log,
+        #                 # Add more metrics as needed
+        #             }
+        #             # Send the data
+        #             network_gui.send(net_image_bytes, dataset.source_path, metrics_dict)
+        #             if do_training and ((iteration < int(opt.iterations)) or not keep_alive):
+        #                 break
+        #         except Exception as e:
+        #             # raise e
+        #             network_gui.conn = None
 
 
 def prepare_output_and_logger(args):
@@ -241,6 +241,7 @@ def training_report(
         tb_writer.add_scalar("iter_time", elapsed, iteration)
         tb_writer.add_scalar("total_points", scene.gaussians.get_xyz.shape[0], iteration)
         tb_writer.add_histogram("confidence", scene.gaussians.get_confidence, iteration)
+        tb_writer.add_histogram("opacity", scene.gaussians.get_opacity, iteration)
 
     # Report test and samples of training set
     if iteration in testing_iterations:
@@ -365,7 +366,7 @@ if __name__ == "__main__":
     safe_state(args.quiet)
 
     # Start GUI server, configure and run training
-    network_gui.init(args.ip, args.port)
+    # network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
     training(
         lp.extract(args),
